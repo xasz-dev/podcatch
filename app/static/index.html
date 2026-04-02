@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#111111">
+  <title>podcatch</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎧</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+
+    <header>
+      <button id="btn-menu-toggle" class="icon-btn mobile-only" title="Feeds">☰</button>
+      <span class="wordmark">podcatch</span>
+      <div class="header-actions">
+        <button id="btn-refresh-all" class="icon-btn" title="Refresh all feeds">↻</button>
+        <button id="btn-add-feed" class="icon-btn primary" title="Add feed">+</button>
+      </div>
+    </header>
+
+    <div id="layout">
+      <nav id="sidebar">
+        <div class="nav-item" data-feed-id="all">
+          <span class="feed-icon">◉</span>
+          <span class="feed-name">All Episodes</span>
+          <span class="unread-badge" id="badge-all"></span>
+        </div>
+        <div id="feed-list"></div>
+      </nav>
+
+      <main id="episode-list">
+        <div id="episode-list-header">
+          <select id="sort-select">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="unread">Unread first</option>
+          </select>
+        </div>
+        <div id="episode-items"></div>
+        <div id="load-more-wrap">
+          <button id="btn-load-more">Load more</button>
+        </div>
+      </main>
+    </div>
+
+    <div id="player" class="hidden">
+      <div id="video-wrap">
+        <video id="media" preload="metadata"></video>
+      </div>
+      <div id="player-resize-handle"></div>
+      <div id="player-bar">
+        <div id="player-info">
+          <img id="player-thumb" src="" alt="">
+          <div id="player-title"></div>
+        </div>
+        <div id="player-controls">
+          <button class="ctrl-btn" id="btn-seek-back" title="−30s">−30</button>
+          <button class="ctrl-btn play-btn" id="btn-play-pause">▶</button>
+          <button class="ctrl-btn" id="btn-seek-fwd" title="+30s">+30</button>
+          <div id="progress-wrap">
+            <span id="time-current">0:00</span>
+            <input type="range" id="seek-bar" value="0" min="0" step="1">
+            <span id="time-total">0:00</span>
+          </div>
+          <button class="ctrl-btn toggle-btn" id="btn-toggle-video" title="Toggle video">▣</button>
+          <button class="ctrl-btn" id="btn-transfer" title="Transfer playback" style="display:none">⇄</button>
+          <div id="speed-wrap">
+            <button class="ctrl-btn" id="btn-speed" title="Playback speed">1×</button>
+            <div id="speed-popup" class="context-menu hidden"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Add Feed dialog -->
+  <dialog id="dialog-add-feed">
+    <h2>Add Feed</h2>
+    <div id="add-feed-tabs">
+      <button class="tab-btn active" data-tab="search">Search</button>
+      <button class="tab-btn" data-tab="url">By URL</button>
+    </div>
+
+    <!-- Search tab -->
+    <div id="tab-search" class="tab-panel">
+      <div id="search-input-row">
+        <input type="text" id="input-search-query" placeholder="Search podcasts…" autocomplete="off">
+        <button id="btn-do-search" class="primary">Search</button>
+      </div>
+      <div id="search-results"></div>
+      <!-- Options shown after selecting a result -->
+      <div id="search-options" class="hidden">
+        <div id="search-selected-info"></div>
+        <label class="row">
+          <input type="checkbox" id="search-prefer-video">
+          Prefer video by default
+        </label>
+        <label class="row">
+          <input type="checkbox" id="search-mark-read">
+          Mark all existing episodes as read
+        </label>
+        <label>
+          Custom name <span style="font-weight:normal;opacity:0.6">(optional)</span>
+          <input type="text" id="search-custom-name" autocomplete="off">
+        </label>
+        <div id="search-add-error" class="error-msg hidden"></div>
+        <div class="dialog-actions">
+          <button type="button" id="btn-search-back">← Back</button>
+          <button type="button" id="btn-search-add" class="primary">Add</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- URL tab -->
+    <div id="tab-url" class="tab-panel hidden">
+      <form id="form-add-feed" method="dialog">
+        <label>
+          URL
+          <input type="url" id="input-feed-url" placeholder="https://..." required autocomplete="off">
+        </label>
+        <label>
+          Custom name <span style="font-weight:normal;opacity:0.6">(optional — uses feed title if blank)</span>
+          <input type="text" id="input-feed-name" placeholder="" autocomplete="off">
+        </label>
+        <label class="row">
+          <input type="checkbox" id="input-prefer-video">
+          Prefer video by default
+        </label>
+        <label class="row">
+          <input type="checkbox" id="input-mark-read">
+          Mark all existing episodes as read
+        </label>
+        <div id="add-feed-error" class="error-msg hidden"></div>
+        <div class="dialog-actions">
+          <button type="button" id="btn-cancel-feed">Cancel</button>
+          <button type="submit" id="btn-submit-feed" class="primary">Add</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- Rename feed dialog -->
+  <dialog id="dialog-rename-feed">
+    <form id="form-rename-feed" method="dialog">
+      <h2>Rename Feed</h2>
+      <label>
+        Name
+        <input type="text" id="input-rename-value" autocomplete="off" required>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" id="btn-cancel-rename">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Device transfer popup -->
+  <div id="device-popup" class="context-menu hidden"></div>
+
+  <!-- Feed context menu -->
+  <div id="feed-menu" class="context-menu hidden">
+    <button data-action="refresh">Refresh now</button>
+    <button data-action="mark-all-read">Mark all as read</button>
+    <button data-action="rename">Rename</button>
+    <button data-action="toggle-video">Toggle video preference</button>
+    <button data-action="delete" class="danger">Remove feed</button>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

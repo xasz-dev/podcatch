@@ -1,0 +1,11 @@
+services:
+  podcatch:
+    build: .
+    container_name: podcatch
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - /volume1/docker/podcatch/data:/data
+    environment:
+      - DB_PATH=/data/podcatch.db
