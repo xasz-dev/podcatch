@@ -185,7 +185,7 @@ def _fetch_playlist_ytdlp(feed_id: int, playlist_id: str) -> list[dict]:
         published_at = None
         ts = entry.get('release_timestamp') or entry.get('timestamp')
         if ts:
-            published_at = datetime.utcfromtimestamp(ts).isoformat()
+            published_at = datetime.utcfromtimestamp(ts).isoformat() + 'Z'
         if not published_at:
             published_at = _parse_upload_date(entry.get('upload_date'))
 
@@ -227,7 +227,7 @@ def _enrich_playlist_dates(episodes: list[dict], missing: list[tuple[int, str]])
                 if not info:
                     continue
                 ts = info.get('release_timestamp') or info.get('timestamp')
-                date = datetime.utcfromtimestamp(ts).isoformat() if ts else None
+                date = datetime.utcfromtimestamp(ts).isoformat() + 'Z' if ts else None
                 if not date:
                     date = _parse_upload_date(info.get('upload_date'))
                 if date:
@@ -237,11 +237,11 @@ def _enrich_playlist_dates(episodes: list[dict], missing: list[tuple[int, str]])
 
 
 def _parse_upload_date(d: str | None) -> str | None:
-    """Convert yt-dlp's YYYYMMDD string to ISO format."""
+    """Convert yt-dlp's YYYYMMDD string to ISO format (UTC midnight)."""
     if not d or len(d) != 8:
         return None
     try:
-        return datetime(int(d[:4]), int(d[4:6]), int(d[6:8])).isoformat()
+        return datetime(int(d[:4]), int(d[4:6]), int(d[6:8])).isoformat() + 'Z'
     except ValueError:
         return None
 
@@ -286,6 +286,6 @@ def _format_date(ts) -> str | None:
     if not ts:
         return None
     try:
-        return datetime(*ts[:6]).isoformat()
+        return datetime(*ts[:6]).isoformat() + 'Z'
     except (TypeError, ValueError):
         return None

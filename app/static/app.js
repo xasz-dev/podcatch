@@ -41,6 +41,7 @@ const state = {
   loadSeq: 0,           // incremented on every new load; stale responses are dropped
   activeFeedMenuId: null,
   otherDevices: [],     // [{ id, name }]
+  refreshingFeedId: null,
 };
 
 const PAGE_SIZE = 50;
@@ -101,8 +102,9 @@ function renderFeeds() {
     const div = document.createElement('div');
     div.className = 'nav-item' + (state.currentFeedId === feed.id ? ' active' : '');
     div.dataset.feedId = feed.id;
+    const refreshing = state.refreshingFeedId === feed.id;
     div.innerHTML = `
-      <span class="feed-icon">${feedIcon(feed.feed_type)}</span>
+      <span class="feed-icon${refreshing ? ' spinning' : ''}">${feedIcon(feed.feed_type)}</span>
       <span class="feed-name">${esc(feed.name)}</span>
       <span class="unread-badge">${feed.unread_count || ''}</span>
     `;
@@ -482,7 +484,13 @@ feedMenu.addEventListener('click', async (e) => {
     await loadFeeds();
     await loadEpisodes(true);
   } else if (action === 'refresh') {
-    await API.feeds.refresh(id);
+    state.refreshingFeedId = id;
+    renderFeeds();
+    try {
+      await API.feeds.refresh(id);
+    } finally {
+      state.refreshingFeedId = null;
+    }
     await loadFeeds();
     if (state.currentFeedId === id || state.currentFeedId === 'all') {
       await selectFeed(state.currentFeedId);
@@ -558,13 +566,15 @@ function formatDuration(seconds) {
 
 function relativeDate(iso) {
   if (!iso) return '';
-  const ms = new Date(iso).getTime();
+  // Stored timestamps are UTC; append Z if no timezone suffix so JS doesn't treat as local time
+  const str = /Z|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z';
+  const ms = new Date(str).getTime();
   if (isNaN(ms)) return '';
   const diff = (Date.now() - ms) / 1000;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
-  return new Date(iso).toLocaleDateString();
+  return new Date(str).toLocaleDateString();
 }
 
 // ── Playback speed ─────────────────────────────────────────────────────────────
