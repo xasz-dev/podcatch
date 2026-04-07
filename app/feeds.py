@@ -79,7 +79,7 @@ def fetch_feed_episodes(feed_id: int, url: str, feed_type: str) -> int:
                 if ep.get('published_at'):
                     db.execute(
                         '''UPDATE episodes SET published_at = :published_at
-                           WHERE feed_id = :feed_id AND guid = :guid AND published_at IS NULL''',
+                           WHERE feed_id = :feed_id AND guid = :guid''',
                         {'published_at': ep['published_at'], 'feed_id': ep['feed_id'], 'guid': ep['guid']},
                     )
             except Exception as e:
@@ -180,12 +180,14 @@ def _fetch_playlist_ytdlp(feed_id: int, playlist_id: str) -> list[dict]:
     for idx, entry in enumerate(entries):
         youtube_id = entry['id']
 
-        # Try every date field yt-dlp might provide in flat mode
-        published_at = _parse_upload_date(entry.get('upload_date'))
+        # Prefer release_timestamp/timestamp (time-accurate) over upload_date
+        # (YYYYMMDD only — reflects when the file was uploaded, not when it premiered)
+        published_at = None
+        ts = entry.get('release_timestamp') or entry.get('timestamp')
+        if ts:
+            published_at = datetime.utcfromtimestamp(ts).isoformat()
         if not published_at:
-            ts = entry.get('timestamp') or entry.get('release_timestamp')
-            if ts:
-                published_at = datetime.utcfromtimestamp(ts).isoformat()
+            published_at = _parse_upload_date(entry.get('upload_date'))
 
         if not published_at:
             needs_date.append((idx, youtube_id))
@@ -224,11 +226,10 @@ def _enrich_playlist_dates(episodes: list[dict], missing: list[tuple[int, str]])
                 )
                 if not info:
                     continue
-                date = _parse_upload_date(info.get('upload_date'))
+                ts = info.get('release_timestamp') or info.get('timestamp')
+                date = datetime.utcfromtimestamp(ts).isoformat() if ts else None
                 if not date:
-                    ts = info.get('timestamp') or info.get('release_timestamp')
-                    if ts:
-                        date = datetime.utcfromtimestamp(ts).isoformat()
+                    date = _parse_upload_date(info.get('upload_date'))
                 if date:
                     episodes[idx]['published_at'] = date
             except Exception:

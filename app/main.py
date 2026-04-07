@@ -14,6 +14,8 @@ from database import get_db, init_db
 from feeds import detect_feed_type, fetch_feed_episodes, get_youtube_stream_url, resolve_feed
 from scheduler import start_scheduler
 
+__version__ = '0.1.1'
+
 # In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
 _devices: dict[str, dict] = {}
 
@@ -171,6 +173,8 @@ async def refresh_feed(feed_id: int):
         )
     except Exception as e:
         raise HTTPException(500, str(e))
+    if count > 0:
+        await _broadcast({'type': 'new_episodes'})
     return {'new_episodes': count}
 
 
@@ -277,6 +281,11 @@ async def sse_stream(device_id: str, name: str):
 @app.get('/api/devices')
 def list_devices():
     return [{'id': did, 'name': dev['name']} for did, dev in _devices.items()]
+
+
+@app.get('/api/version')
+def get_version():
+    return {'version': __version__}
 
 
 class HandoffRequest(BaseModel):

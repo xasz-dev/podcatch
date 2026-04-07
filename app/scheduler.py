@@ -38,6 +38,6 @@ async def poll_due_feeds():
             try:
                 count = fetch_feed_episodes(feed['id'], feed['url'], feed['feed_type'])
                 if count > 0 and _broadcast_fn:
-                    await _broadcast_fn({'type': 'feeds_changed'})
+                    await _broadcast_fn({'type': 'new_episodes'})
             except Exception as e:
                 print(f'Feed {feed["id"]} refresh error: {e}')

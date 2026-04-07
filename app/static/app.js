@@ -127,6 +127,7 @@ async function selectFeed(feedId) {
   state.episodes = [];
   state.hasMore = true;
   renderFeeds();
+  renderEpisodes(true); // clear stale content immediately before API responds
   await loadEpisodes(true);
 }
 
@@ -263,12 +264,15 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
   media.src = src;
 
   if (ep.playback_position > 5) {
+    // Seek to saved position first, then play — avoids a race where play() and
+    // a mid-stream seek fire concurrently and leave media paused at the seek point.
     media.addEventListener('loadedmetadata', () => {
       media.currentTime = ep.playback_position;
+      media.play().catch(() => {});
     }, { once: true });
+  } else {
+    media.play().catch(() => {});
   }
-
-  media.play();
   restoreSpeed();
 
   // Update UI
@@ -779,6 +783,11 @@ function connectSSE() {
       await loadFeeds();
     }
 
+    if (event.type === 'new_episodes') {
+      await loadFeeds();
+      await loadEpisodes(true);
+    }
+
     if (event.type === 'handoff') {
       // Another device is handing playback to us
       const ep = await API.episodes.get(event.episode_id);
@@ -852,4 +861,7 @@ async function transferTo(targetDeviceId) {
   connectSSE();
   await loadFeeds();
   await loadEpisodes(true);
+  api('GET', '/api/version').then(v => {
+    $('sidebar-version').textContent = `v${v.version}`;
+  }).catch(() => {});
 })();

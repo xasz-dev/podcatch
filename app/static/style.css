@@ -63,6 +63,13 @@ header {
 }
 
 /* ── Sidebar ───────────────────────────────────────────────────────────────── */
+#sidebar-version {
+  padding: 12px 14px 4px;
+  font-size: 11px;
+  color: var(--text2);
+  opacity: 0.4;
+}
+
 #sidebar {
   width: var(--sidebar-w);
   flex-shrink: 0;
