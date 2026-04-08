@@ -332,6 +332,13 @@ header {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+#btn-end-played {
+  font-size: 10px;
+  padding: 2px 4px;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+#btn-end-played:hover { opacity: 1; }
 
 .toggle-btn.active { color: var(--accent); }
 
@@ -612,6 +619,13 @@ label input:focus { border-color: var(--accent); }
 }
 .context-menu button:hover { background: var(--surface2); }
 .context-menu button.danger { color: var(--danger); }
+
+/* ── Episode slide-in ──────────────────────────────────────────────────────── */
+@keyframes slideInDown {
+  from { opacity: 0; transform: translateY(-12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.episode-slide-in { animation: slideInDown 0.25s ease; }
 
 /* ── Spinner ───────────────────────────────────────────────────────────────── */
 .spinning { animation: spin 1s linear infinite; }

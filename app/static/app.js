@@ -179,6 +179,35 @@ function renderEpisodes(replace = true) {
   $('load-more-wrap').style.display = state.hasMore ? '' : 'none';
 }
 
+async function prependNewEpisodes() {
+  const batch = await API.episodes.list(state.currentFeedId, 0, state.sort);
+
+  if (state.sort !== 'newest') {
+    // For non-newest sorts new items don't belong at the top — do a plain reload
+    state.episodes = batch;
+    state.offset = batch.length;
+    state.hasMore = batch.length === PAGE_SIZE;
+    renderEpisodes(true);
+    return;
+  }
+
+  const existingIds = new Set(state.episodes.map(e => e.id));
+  const newEps = batch.filter(ep => !existingIds.has(ep.id));
+  if (!newEps.length) return;
+
+  state.episodes = [...newEps, ...state.episodes];
+  state.offset = state.episodes.length;
+
+  const container = $('episode-items');
+  const fragment = document.createDocumentFragment();
+  for (const ep of newEps) {
+    const el = buildEpisodeEl(ep);
+    el.classList.add('episode-slide-in');
+    fragment.appendChild(el);
+  }
+  container.insertBefore(fragment, container.firstChild);
+}
+
 function buildEpisodeEl(ep) {
   const isPlaying = state.playing && state.playing.episode.id === ep.id;
   const div = document.createElement('div');
@@ -252,12 +281,6 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
       const fresh = await API.episodes.get(ep.id);
       ep.playback_position = fresh.playback_position;
     } catch (_) {}
-  }
-
-  // Mark as read
-  if (!ep.is_read) {
-    API.episodes.update(ep.id, { is_read: true });
-    ep.is_read = true;
   }
 
   state.playing = { episode: ep, preferVideo };
@@ -402,8 +425,23 @@ media.addEventListener('ended', () => {
 $('btn-play-pause').addEventListener('click', () => {
   media.paused ? media.play() : media.pause();
 });
+$('btn-seek-back10').addEventListener('click', () => { media.currentTime -= 10; });
 $('btn-seek-back').addEventListener('click', () => { media.currentTime -= 30; });
 $('btn-seek-fwd').addEventListener('click', () => { media.currentTime += 30; });
+$('btn-end-played').addEventListener('click', () => {
+  if (!state.playing) return;
+  const ep = state.playing.episode;
+  media.pause();
+  API.episodes.update(ep.id, { is_read: true, playback_position: 0 });
+  ep.is_read = true;
+  const el = document.querySelector(`[data-ep-id="${ep.id}"]`);
+  if (el) {
+    el.classList.add('read');
+    const markBtn = el.querySelector('.btn-mark-read');
+    if (markBtn) { markBtn.title = 'Mark unread'; markBtn.textContent = '○'; }
+  }
+  loadFeeds();
+});
 $('seek-bar').addEventListener('input', (e) => {
   media.currentTime = (e.target.value / 100) * (media.duration || 0);
 });
@@ -795,7 +833,7 @@ function connectSSE() {
 
     if (event.type === 'new_episodes') {
       await loadFeeds();
-      await loadEpisodes(true);
+      await prependNewEpisodes();
     }
 
     if (event.type === 'handoff') {
