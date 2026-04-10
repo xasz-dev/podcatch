@@ -275,7 +275,26 @@ async function toggleRead(ep) {
 let positionInterval = null;
 
 async function playEpisode(ep, preferVideo, skipFetch = false) {
-  // Fetch fresh position from DB in case another device has been playing
+  state.playing = { episode: ep, preferVideo };
+
+  const src = `/api/stream/${ep.id}${preferVideo ? '?video=true' : '?video=false'}`;
+
+  // Update UI immediately — before any awaits so there's instant feedback
+  $('player').classList.remove('hidden');
+  $('player-title').textContent = ep.title;
+  $('player-thumb').src = ep.thumbnail_url || '';
+  $('player-thumb').style.display = ep.thumbnail_url ? '' : 'none';
+  $('btn-play-pause').textContent = '⋯';
+  setVideoMode(preferVideo && (ep.has_video || ep.youtube_id));
+  updateTransferButton();
+  document.querySelectorAll('.episode-item').forEach(el => el.classList.remove('playing', 'loading'));
+  document.querySelector(`[data-ep-id="${ep.id}"]`)?.classList.add('playing', 'loading');
+
+  // Start stream loading immediately — this kicks off yt-dlp resolution on the server
+  // in parallel with the position fetch below, reducing perceived latency.
+  media.src = src;
+
+  // Fetch fresh position in parallel with stream resolving
   if (!skipFetch) {
     try {
       const fresh = await API.episodes.get(ep.id);
@@ -283,10 +302,7 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
     } catch (_) {}
   }
 
-  state.playing = { episode: ep, preferVideo };
-
-  const src = `/api/stream/${ep.id}${preferVideo ? '?video=true' : '?video=false'}`;
-  media.src = src;
+  restoreSpeed();
 
   if (ep.playback_position > 5) {
     // Seek to saved position first, then play — avoids a race where play() and
@@ -298,21 +314,6 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
   } else {
     media.play().catch(() => {});
   }
-  restoreSpeed();
-
-  // Update UI
-  $('player').classList.remove('hidden');
-  $('player-title').textContent = ep.title;
-  $('player-thumb').src = ep.thumbnail_url || '';
-  $('player-thumb').style.display = ep.thumbnail_url ? '' : 'none';
-
-  setVideoMode(preferVideo && (ep.has_video || ep.youtube_id));
-
-  updateTransferButton();
-
-  // Highlight in list
-  document.querySelectorAll('.episode-item').forEach(el => el.classList.remove('playing'));
-  document.querySelector(`[data-ep-id="${ep.id}"]`)?.classList.add('playing');
 
   // Position saving
   clearInterval(positionInterval);
@@ -395,9 +396,31 @@ applyVideoHeight(getVideoHeight());
 
 // Player event listeners
 media.addEventListener('click', () => { media.paused ? media.play() : media.pause(); });
-media.addEventListener('play', () => { $('btn-play-pause').textContent = '⏸'; });
-media.addEventListener('pause', () => {
+media.addEventListener('play', () => { $('btn-play-pause').textContent = '⋯'; });
+media.addEventListener('playing', () => {
+  $('btn-play-pause').textContent = '⏸';
+  document.querySelectorAll('.episode-item.loading').forEach(el => el.classList.remove('loading'));
+});
+media.addEventListener('waiting', () => { $('btn-play-pause').textContent = '⋯'; });
+media.addEventListener('error', async () => {
   $('btn-play-pause').textContent = '▶';
+  document.querySelectorAll('.episode-item.loading').forEach(el => el.classList.remove('loading'));
+  if (!state.playing) return;
+  let msg = `Couldn't load "${state.playing.episode.title}"`;
+  try {
+    const ep = state.playing.episode;
+    const pv = state.playing.preferVideo;
+    const resp = await fetch(`/api/stream/${ep.id}?video=${pv}`);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => null);
+      if (err?.detail) msg = err.detail;
+    }
+  } catch (_) {}
+  showToast(msg, 'error');
+});
+media.addEventListener('pause', () => {
+  // Don't overwrite the loading indicator if we're switching tracks
+  if ($('btn-play-pause').textContent !== '⋯') $('btn-play-pause').textContent = '▶';
   if (state.playing && media.currentTime > 0) {
     const pos = Math.floor(media.currentTime);
     API.episodes.update(state.playing.episode.id, { playback_position: pos });
@@ -613,6 +636,31 @@ function relativeDate(iso) {
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
   return new Date(str).toLocaleDateString();
+}
+
+// ── Toast notifications ────────────────────────────────────────────────────────
+function showToast(msg, type = 'info') {
+  const container = $('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+
+  const text = document.createElement('span');
+  text.textContent = msg;
+  toast.appendChild(text);
+
+  const close = document.createElement('button');
+  close.textContent = '×';
+  close.addEventListener('click', () => dismissToast(toast));
+  toast.appendChild(close);
+
+  container.appendChild(toast);
+  setTimeout(() => dismissToast(toast), 6000);
+}
+
+function dismissToast(toast) {
+  if (!toast.parentNode) return;
+  toast.classList.add('toast-out');
+  toast.addEventListener('animationend', () => toast.remove(), { once: true });
 }
 
 // ── Playback speed ─────────────────────────────────────────────────────────────

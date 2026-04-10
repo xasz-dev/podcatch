@@ -173,7 +173,11 @@ def _fetch_playlist_ytdlp(feed_id: int, playlist_id: str) -> list[dict]:
             f'https://www.youtube.com/playlist?list={playlist_id}', download=False
         )
 
-    entries = [e for e in ((info.get('entries') if info else None) or []) if e and e.get('id')]
+    # Filter out upcoming/unprocessed streams — yt-dlp can't resolve URLs for them
+    entries = [
+        e for e in ((info.get('entries') if info else None) or [])
+        if e and e.get('id') and e.get('live_status') not in ('is_upcoming', 'post_live')
+    ]
     episodes = []
     needs_date: list[tuple[int, str]] = []  # (index, youtube_id)
 
@@ -256,12 +260,18 @@ def get_youtube_stream_url(youtube_id: str, prefer_video: bool) -> tuple[str, st
         content_type = 'audio/mp4'
 
     opts = {'quiet': True, 'no_warnings': True, 'format': fmt}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(
-            f'https://www.youtube.com/watch?v={youtube_id}', download=False
-        )
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(
+                f'https://www.youtube.com/watch?v={youtube_id}', download=False
+            )
+    except Exception as e:
+        msg = str(e).lower()
+        if any(k in msg for k in ('upcoming', 'premiere', 'not yet started', 'scheduled', 'live event will begin')):
+            raise ValueError('This is a scheduled premiere or upcoming livestream — not available yet')
+        raise ValueError(str(e))
 
-    url = info.get('url')
+    url = info.get('url') if info else None
     if not url:
         raise ValueError(f'No stream URL found for {youtube_id}')
     return url, content_type
