@@ -686,7 +686,8 @@ label input:focus { border-color: var(--accent); }
 .mobile-only { display: none; }
 
 @media (max-width: 600px) {
-  :root { --sidebar-w: 100%; --player-h: 70px; }
+  /* Extra height to fit 2-row player layout */
+  :root { --sidebar-w: 100%; --player-h: 96px; }
 
   .mobile-only { display: flex; }
 
@@ -704,5 +705,36 @@ label input:focus { border-color: var(--accent); }
 
   #player-info { display: none; }
 
-  .ep-actions { opacity: 1; }
+  /* Two-row player: progress bar on top, controls below */
+  #player-bar {
+    height: auto;
+    padding: 8px 10px;
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  #player-controls {
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+  }
+
+  /* Progress row goes first (full width) */
+  #progress-wrap {
+    order: -1;
+    width: 100%;
+    flex: none;
+    gap: 4px;
+  }
+
+  /* Hide −10s on mobile — saves space, −30 is still there */
+  #btn-seek-back10 { display: none; }
+
+  /* Slightly larger tap targets */
+  .ctrl-btn { font-size: 13px; padding: 5px 8px; }
+  .play-btn { font-size: 20px; padding: 5px 10px; }
+
+  /* Episode action buttons: always visible, easier to tap */
+  .ep-actions { opacity: 1; gap: 6px; }
+  .small-btn { font-size: 13px; padding: 4px 10px; min-height: 30px; }
 }

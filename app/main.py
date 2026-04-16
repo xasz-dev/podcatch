@@ -14,7 +14,7 @@ from database import get_db, init_db
 from feeds import detect_feed_type, fetch_feed_episodes, get_youtube_stream_url, resolve_feed
 from scheduler import start_scheduler
 
-__version__ = '0.1.4'
+__version__ = '0.1.5'
 
 # In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
 _devices: dict[str, dict] = {}
@@ -311,7 +311,7 @@ async def handoff(req: HandoffRequest):
 # ── Streaming ──────────────────────────────────────────────────────────────────
 
 @app.get('/api/stream/{episode_id}')
-async def stream_episode(episode_id: int, request: Request, video: Optional[bool] = None):
+async def stream_episode(episode_id: int, request: Request, video: Optional[bool] = None, no_cache: bool = False):
     with get_db() as db:
         ep = db.execute(
             '''SELECT e.*, f.prefer_video as feed_prefer_video
@@ -333,7 +333,8 @@ async def stream_episode(episode_id: int, request: Request, video: Optional[bool
         raise HTTPException(404, 'No media available for this episode')
 
     # YouTube: resolve stream URL and proxy (required for range-request seeking)
-    cached = _get_cached_stream(ep['youtube_id'], prefer_video)
+    # no_cache=True forces re-resolution (used by client on retry after stream failure)
+    cached = None if no_cache else _get_cached_stream(ep['youtube_id'], prefer_video)
     if cached:
         stream_url, content_type = cached
     else:

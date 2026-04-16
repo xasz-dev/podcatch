@@ -273,8 +273,10 @@ async function toggleRead(ep) {
 
 // ── Player ─────────────────────────────────────────────────────────────────────
 let positionInterval = null;
+let _mediaRetrying = false;
 
 async function playEpisode(ep, preferVideo, skipFetch = false) {
+  _mediaRetrying = false;
   state.playing = { episode: ep, preferVideo };
 
   const src = `/api/stream/${ep.id}${preferVideo ? '?video=true' : '?video=false'}`;
@@ -328,6 +330,8 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
 function setVideoMode(show) {
   $('player').classList.toggle('show-video', show);
   $('btn-toggle-video').classList.toggle('active', show);
+  const hasVideo = !!(state.playing?.episode?.has_video || state.playing?.episode?.youtube_id);
+  $('btn-toggle-video').style.display = hasVideo ? '' : 'none';
 }
 
 // ── Video resize handle ────────────────────────────────────────────────────────
@@ -406,6 +410,20 @@ media.addEventListener('error', async () => {
   $('btn-play-pause').textContent = '▶';
   document.querySelectorAll('.episode-item.loading').forEach(el => el.classList.remove('loading'));
   if (!state.playing) return;
+
+  // Auto-retry once with cache bypass — handles stale YouTube stream URLs or
+  // updated RSS media_url after a feed refresh without requiring a page reload.
+  if (!_mediaRetrying) {
+    _mediaRetrying = true;
+    const ep = state.playing.episode;
+    const pv = state.playing.preferVideo;
+    $('btn-play-pause').textContent = '⋯';
+    media.src = `/api/stream/${ep.id}?video=${pv}&no_cache=1`;
+    media.play().catch(() => {});
+    return;
+  }
+  _mediaRetrying = false;
+
   let msg = `Couldn't load "${state.playing.episode.title}"`;
   try {
     const ep = state.playing.episode;
