@@ -42,6 +42,8 @@ const state = {
   activeFeedMenuId: null,
   otherDevices: [],     // [{ id, name }]
   refreshingFeedId: null,
+  remote: null,         // { deviceId, deviceName } — non-null when controlling a remote device
+  remoteState: {},      // deviceId → { episode_id, episode, position, duration, playing, speed, prefer_video }
 };
 
 const PAGE_SIZE = 50;
@@ -276,6 +278,7 @@ let positionInterval = null;
 let _mediaRetrying = false;
 
 async function playEpisode(ep, preferVideo, skipFetch = false) {
+  if (state.remote) exitRemoteMode();
   _mediaRetrying = false;
   state.playing = { episode: ep, preferVideo };
 
@@ -323,6 +326,7 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
     if (!media.paused && media.currentTime > 0) {
       API.episodes.update(ep.id, { playback_position: Math.floor(media.currentTime) });
       ep.playback_position = Math.floor(media.currentTime);
+      broadcastState();
     }
   }, 10000);
 }
@@ -404,6 +408,7 @@ media.addEventListener('play', () => { $('btn-play-pause').textContent = '⋯'; 
 media.addEventListener('playing', () => {
   $('btn-play-pause').textContent = '⏸';
   document.querySelectorAll('.episode-item.loading').forEach(el => el.classList.remove('loading'));
+  broadcastState();
 });
 media.addEventListener('waiting', () => { $('btn-play-pause').textContent = '⋯'; });
 media.addEventListener('error', async () => {
@@ -428,7 +433,7 @@ media.addEventListener('error', async () => {
   try {
     const ep = state.playing.episode;
     const pv = state.playing.preferVideo;
-    const resp = await fetch(`/api/stream/${ep.id}?video=${pv}`);
+    const resp = await fetch(`/api/stream/${ep.id}?video=${pv}`, { redirect: 'manual' });
     if (!resp.ok) {
       const err = await resp.json().catch(() => null);
       if (err?.detail) msg = err.detail;
@@ -444,6 +449,7 @@ media.addEventListener('pause', () => {
     API.episodes.update(state.playing.episode.id, { playback_position: pos });
     state.playing.episode.playback_position = pos;
   }
+  broadcastState();
 });
 media.addEventListener('timeupdate', () => {
   if (!media.duration) return;
@@ -461,14 +467,44 @@ media.addEventListener('ended', () => {
     const el = document.querySelector(`[data-ep-id="${ep.id}"]`);
     if (el) el.classList.add('read');
   }
+  broadcastState();
 });
 
 $('btn-play-pause').addEventListener('click', () => {
+  if (state.remote) {
+    const rs = state.remoteState[state.remote.deviceId];
+    api('POST', '/api/remote', { to_device_id: state.remote.deviceId, command: 'play_pause', from_device_id: DEVICE_ID }).catch(() => {});
+    // Optimistic update
+    if (rs) {
+      rs.playing = !rs.playing;
+      $('btn-play-pause').textContent = rs.playing ? '⏸' : '▶';
+      rs.playing ? startRemoteTicker() : stopRemoteTicker();
+    }
+    return;
+  }
   media.paused ? media.play() : media.pause();
 });
-$('btn-seek-back10').addEventListener('click', () => { media.currentTime -= 10; });
-$('btn-seek-back').addEventListener('click', () => { media.currentTime -= 30; });
-$('btn-seek-fwd').addEventListener('click', () => { media.currentTime += 30; });
+$('btn-seek-back10').addEventListener('click', () => {
+  if (state.remote) {
+    sendRemoteSeek(-10);
+    return;
+  }
+  media.currentTime -= 10;
+});
+$('btn-seek-back').addEventListener('click', () => {
+  if (state.remote) {
+    sendRemoteSeek(-30);
+    return;
+  }
+  media.currentTime -= 30;
+});
+$('btn-seek-fwd').addEventListener('click', () => {
+  if (state.remote) {
+    sendRemoteSeek(30);
+    return;
+  }
+  media.currentTime += 30;
+});
 $('btn-end-played').addEventListener('click', () => {
   if (!state.playing) return;
   const ep = state.playing.episode;
@@ -484,6 +520,15 @@ $('btn-end-played').addEventListener('click', () => {
   loadFeeds();
 });
 $('seek-bar').addEventListener('input', (e) => {
+  if (state.remote) {
+    const rs = state.remoteState[state.remote.deviceId];
+    if (!rs?.duration) return;
+    const pos = (e.target.value / 100) * rs.duration;
+    api('POST', '/api/remote', { to_device_id: state.remote.deviceId, command: 'seek_absolute', position: pos, from_device_id: DEVICE_ID }).catch(() => {});
+    rs.position = pos;
+    $('time-current').textContent = formatDuration(Math.floor(pos));
+    return;
+  }
   media.currentTime = (e.target.value / 100) * (media.duration || 0);
 });
 $('btn-toggle-video').addEventListener('click', () => {
@@ -719,15 +764,27 @@ function buildSpeedPopup(currentSpeed) {
 }
 
 function setSpeed(s) {
+  if (state.remote) {
+    api('POST', '/api/remote', { to_device_id: state.remote.deviceId, command: 'set_speed', speed: s, from_device_id: DEVICE_ID }).catch(() => {});
+    speedPopup.classList.add('hidden');
+    speedBtn.textContent = s === 1 ? '1×' : `${s}×`;
+    const rs = state.remoteState[state.remote.deviceId];
+    if (rs) rs.speed = s;
+    return;
+  }
   media.playbackRate = s;
   speedBtn.textContent = s === 1 ? '1×' : `${s}×`;
   speedPopup.classList.add('hidden');
   localStorage.setItem('podcatch_speed', s);
+  broadcastState();
 }
 
 speedBtn.addEventListener('click', (e) => {
   e.stopPropagation();
-  buildSpeedPopup(media.playbackRate || 1);
+  const currentSpeed = state.remote
+    ? (state.remoteState[state.remote.deviceId]?.speed || 1)
+    : (media.playbackRate || 1);
+  buildSpeedPopup(currentSpeed);
   speedPopup.classList.toggle('hidden');
   // Scroll active preset into view
   requestAnimationFrame(() => {
@@ -890,6 +947,12 @@ function connectSSE() {
     if (event.type === 'connected' || event.type === 'devices_changed') {
       const devices = await api('GET', '/api/devices');
       state.otherDevices = devices.filter(d => d.id !== DEVICE_ID);
+      // If the device we're controlling just disconnected, exit remote mode
+      if (state.remote && !state.otherDevices.find(d => d.id === state.remote.deviceId)) {
+        const remoteName = state.remote.deviceName;
+        exitRemoteMode();
+        showToast(`${remoteName} disconnected`, 'info');
+      }
       updateTransferButton();
     }
 
@@ -908,6 +971,61 @@ function connectSSE() {
       ep.playback_position = event.position;
       await playEpisode(ep, event.prefer_video, /* skipFetch */ true);
     }
+
+    if (event.type === 'remote_command') {
+      // We are being controlled by another device
+      if (event.command === 'play_pause') {
+        media.paused ? media.play() : media.pause();
+      } else if (event.command === 'seek_relative' && event.delta != null) {
+        media.currentTime = Math.max(0, media.currentTime + event.delta);
+      } else if (event.command === 'seek_absolute' && event.position != null) {
+        media.currentTime = event.position;
+      } else if (event.command === 'set_speed' && event.speed != null) {
+        setSpeed(event.speed);
+      } else if (event.command === 'request_state') {
+        broadcastState();
+      } else if (event.command === 'reclaim' && event.from_device_id && state.playing) {
+        const pos = Math.floor(media.currentTime);
+        await API.episodes.update(state.playing.episode.id, { playback_position: pos });
+        await api('POST', '/api/handoff', {
+          to_device_id: event.from_device_id,
+          episode_id: state.playing.episode.id,
+          position: pos,
+          prefer_video: state.playing.preferVideo,
+        });
+        media.pause();
+      }
+    }
+
+    if (event.type === 'player_state') {
+      // Track state broadcast from another device
+      const existing = state.remoteState[event.device_id] || {};
+      const episodeChanged = event.episode_id !== existing.episode_id;
+      state.remoteState[event.device_id] = {
+        ...existing,
+        episode_id: event.episode_id,
+        position: event.position,
+        duration: event.duration,
+        playing: event.playing,
+        speed: event.speed,
+        prefer_video: event.prefer_video,
+        deviceName: event.device_name,
+        episode: episodeChanged ? null : existing.episode,
+      };
+      if (episodeChanged && event.episode_id) {
+        API.episodes.get(event.episode_id).then(ep => {
+          if (state.remoteState[event.device_id]) {
+            state.remoteState[event.device_id].episode = ep;
+            if (state.remote?.deviceId === event.device_id) updateRemotePlayerUI(state.remoteState[event.device_id]);
+          }
+        }).catch(() => {});
+      }
+      if (state.remote?.deviceId === event.device_id) {
+        updateRemotePlayerUI(state.remoteState[event.device_id]);
+        // Sync the ticker to the authoritative playing state
+        event.playing ? startRemoteTicker() : stopRemoteTicker();
+      }
+    }
   };
 
   es.onerror = () => {
@@ -917,28 +1035,52 @@ function connectSSE() {
 }
 
 function updateTransferButton() {
-  const btn = $('btn-transfer');
-  btn.style.display = state.otherDevices.length > 0 && state.playing ? '' : 'none';
+  // Button is always visible in the header; nothing to toggle.
 }
 
 const devicePopup = $('device-popup');
 
 $('btn-transfer').addEventListener('click', () => {
-  if (!state.playing) return;
   devicePopup.innerHTML = '';
-  for (const dev of state.otherDevices) {
-    const btn = document.createElement('button');
-    btn.textContent = `Send to ${esc(dev.name)}`;
-    btn.addEventListener('click', () => transferTo(dev.id));
-    devicePopup.appendChild(btn);
+
+  if (state.remote) {
+    // In remote mode — show exit/reclaim options
+    const exitBtn = document.createElement('button');
+    exitBtn.textContent = 'Exit remote';
+    exitBtn.addEventListener('click', exitRemoteMode);
+    devicePopup.appendChild(exitBtn);
+
+    const reclaimBtn = document.createElement('button');
+    reclaimBtn.textContent = `Reclaim from ${esc(state.remote.deviceName)}`;
+    reclaimBtn.addEventListener('click', () => reclaimFromRemote(state.remote.deviceId));
+    devicePopup.appendChild(reclaimBtn);
+  } else if (state.otherDevices.length === 0) {
+    const msg = document.createElement('div');
+    msg.className = 'popup-msg';
+    msg.textContent = 'No other devices online';
+    devicePopup.appendChild(msg);
+  } else {
+    for (const dev of state.otherDevices) {
+      if (state.playing) {
+        const sendBtn = document.createElement('button');
+        sendBtn.textContent = `Send to ${esc(dev.name)}`;
+        sendBtn.addEventListener('click', () => transferTo(dev.id));
+        devicePopup.appendChild(sendBtn);
+      }
+
+      const remoteBtn = document.createElement('button');
+      remoteBtn.textContent = `Remote ${esc(dev.name)}`;
+      remoteBtn.addEventListener('click', () => enterRemoteMode(dev.id, dev.name));
+      devicePopup.appendChild(remoteBtn);
+    }
   }
+
   devicePopup.classList.toggle('hidden');
-  // Position after paint so offsetWidth/Height are known
+  // Position below the header button
   requestAnimationFrame(() => {
     const rect = $('btn-transfer').getBoundingClientRect();
     const popW = devicePopup.offsetWidth;
-    const popH = devicePopup.offsetHeight;
-    const top = rect.top - popH - 8;
+    const top = rect.bottom + 8;
     const left = Math.min(rect.left, window.innerWidth - popW - 8);
     devicePopup.style.top = Math.max(8, top) + 'px';
     devicePopup.style.left = Math.max(8, left) + 'px';
@@ -968,6 +1110,128 @@ async function transferTo(targetDeviceId) {
 
   // Pause locally
   media.pause();
+}
+
+// ── Remote control ─────────────────────────────────────────────────────────────
+
+let _broadcastThrottle = null;
+function broadcastState() {
+  if (!state.otherDevices.length || state.remote) return;
+  clearTimeout(_broadcastThrottle);
+  _broadcastThrottle = setTimeout(() => {
+    api('POST', '/api/state', {
+      from_device_id: DEVICE_ID,
+      episode_id: state.playing?.episode?.id ?? null,
+      position: media.currentTime || 0,
+      duration: isFinite(media.duration) ? media.duration : 0,
+      playing: !media.paused,
+      speed: media.playbackRate || 1,
+      prefer_video: state.playing?.preferVideo ?? false,
+    }).catch(() => {});
+  }, 200);
+}
+
+let _remotePositionTicker = null;
+function startRemoteTicker() {
+  stopRemoteTicker();
+  _remotePositionTicker = setInterval(() => {
+    if (!state.remote) return;
+    const rs = state.remoteState[state.remote.deviceId];
+    if (!rs?.playing) return;
+    rs.position = (rs.position || 0) + 1;
+    if (rs.duration) $('seek-bar').value = (rs.position / rs.duration) * 100;
+    $('time-current').textContent = formatDuration(Math.floor(rs.position));
+  }, 1000);
+}
+
+function stopRemoteTicker() {
+  clearInterval(_remotePositionTicker);
+  _remotePositionTicker = null;
+}
+
+function updateRemotePlayerUI(rs) {
+  if (!state.remote) return;
+  $('player-title').textContent = rs.episode?.title || `Playing on ${state.remote.deviceName}`;
+  $('player-thumb').src = rs.episode?.thumbnail_url || '';
+  $('player-thumb').style.display = rs.episode?.thumbnail_url ? '' : 'none';
+  $('btn-play-pause').textContent = rs.playing ? '⏸' : '▶';
+  const spd = rs.speed || 1;
+  speedBtn.textContent = spd === 1 ? '1×' : `${spd}×`;
+  if (rs.duration && rs.position !== undefined) {
+    $('seek-bar').value = (rs.position / rs.duration) * 100;
+    $('time-current').textContent = formatDuration(Math.floor(rs.position));
+    $('time-total').textContent = formatDuration(Math.floor(rs.duration));
+  }
+}
+
+async function enterRemoteMode(deviceId, deviceName) {
+  devicePopup.classList.add('hidden');
+  if (!media.paused) media.pause();
+  state.remote = { deviceId, deviceName };
+  $('player').classList.remove('hidden');
+  $('player').classList.add('remote-mode');
+  $('remote-indicator').textContent = `Remote: ${deviceName}`;
+  updateTransferButton();
+
+  // Show what we already know while waiting for the state refresh
+  const rs = state.remoteState[deviceId];
+  if (rs) {
+    updateRemotePlayerUI(rs);
+    if (rs.playing) startRemoteTicker();
+  } else {
+    $('player-title').textContent = `Connecting to ${deviceName}…`;
+    $('btn-play-pause').textContent = '⋯';
+  }
+
+  // Ask the remote device to push its current state immediately
+  api('POST', '/api/remote', { to_device_id: deviceId, command: 'request_state', from_device_id: DEVICE_ID }).catch(() => {});
+}
+
+function exitRemoteMode() {
+  devicePopup.classList.add('hidden');
+  stopRemoteTicker();
+  state.remote = null;
+  $('player').classList.remove('remote-mode');
+  $('remote-indicator').textContent = '';
+
+  if (state.playing) {
+    $('player').classList.remove('hidden');
+    $('player-title').textContent = state.playing.episode.title;
+    $('player-thumb').src = state.playing.episode.thumbnail_url || '';
+    $('player-thumb').style.display = state.playing.episode.thumbnail_url ? '' : 'none';
+    $('btn-play-pause').textContent = media.paused ? '▶' : '⏸';
+    const spd = media.playbackRate || 1;
+    speedBtn.textContent = spd === 1 ? '1×' : `${spd}×`;
+    if (isFinite(media.duration) && media.duration) {
+      $('seek-bar').value = (media.currentTime / media.duration) * 100;
+      $('time-current').textContent = formatDuration(Math.floor(media.currentTime));
+      $('time-total').textContent = formatDuration(Math.floor(media.duration));
+    }
+  } else {
+    $('player').classList.add('hidden');
+  }
+  updateTransferButton();
+}
+
+async function reclaimFromRemote(deviceId) {
+  devicePopup.classList.add('hidden');
+  // Tell the remote device to hand off back to us; exitRemoteMode clears state
+  // so that the incoming handoff SSE event plays cleanly via playEpisode.
+  exitRemoteMode();
+  await api('POST', '/api/remote', {
+    to_device_id: deviceId,
+    command: 'reclaim',
+    from_device_id: DEVICE_ID,
+  }).catch(() => {});
+}
+
+function sendRemoteSeek(delta) {
+  const rs = state.remoteState[state.remote.deviceId];
+  api('POST', '/api/remote', { to_device_id: state.remote.deviceId, command: 'seek_relative', delta, from_device_id: DEVICE_ID }).catch(() => {});
+  if (rs) {
+    rs.position = Math.max(0, Math.min(rs.duration || Infinity, (rs.position || 0) + delta));
+    updateRemotePlayerUI(rs);
+  }
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────────

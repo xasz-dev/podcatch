@@ -14,7 +14,7 @@ from database import get_db, init_db
 from feeds import detect_feed_type, fetch_feed_episodes, get_youtube_stream_url, resolve_feed
 from scheduler import start_scheduler
 
-__version__ = '0.1.5'
+__version__ = '0.2.0'
 
 # In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
 _devices: dict[str, dict] = {}
@@ -305,6 +305,57 @@ async def handoff(req: HandoffRequest):
         'position': req.position,
         'prefer_video': req.prefer_video,
     })
+    return {'ok': True}
+
+
+class RemoteCommandRequest(BaseModel):
+    to_device_id: str
+    command: str  # 'play_pause' | 'seek_relative' | 'seek_absolute' | 'set_speed' | 'request_state' | 'reclaim'
+    delta: Optional[float] = None
+    speed: Optional[float] = None
+    position: Optional[float] = None
+    from_device_id: Optional[str] = None
+
+
+@app.post('/api/remote')
+async def send_remote_command(req: RemoteCommandRequest):
+    if req.to_device_id not in _devices:
+        raise HTTPException(404, 'Target device not connected')
+    await _push(req.to_device_id, {
+        'type': 'remote_command',
+        'command': req.command,
+        'delta': req.delta,
+        'speed': req.speed,
+        'position': req.position,
+        'from_device_id': req.from_device_id,
+    })
+    return {'ok': True}
+
+
+class PlayerStateRequest(BaseModel):
+    from_device_id: str
+    episode_id: Optional[int] = None
+    position: float = 0
+    duration: float = 0
+    playing: bool = False
+    speed: float = 1.0
+    prefer_video: bool = False
+
+
+@app.post('/api/state')
+async def broadcast_player_state(req: PlayerStateRequest):
+    device_name = _devices.get(req.from_device_id, {}).get('name', '')
+    await _broadcast({
+        'type': 'player_state',
+        'device_id': req.from_device_id,
+        'device_name': device_name,
+        'episode_id': req.episode_id,
+        'position': req.position,
+        'duration': req.duration,
+        'playing': req.playing,
+        'speed': req.speed,
+        'prefer_video': req.prefer_video,
+    }, exclude=req.from_device_id)
     return {'ok': True}
 
 
