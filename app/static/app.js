@@ -309,15 +309,19 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
 
   restoreSpeed();
 
+  const handleAutoplayBlocked = err => {
+    if (err.name === 'NotAllowedError') $('btn-play-pause').textContent = '▶';
+  };
+
   if (ep.playback_position > 5) {
     // Seek to saved position first, then play — avoids a race where play() and
     // a mid-stream seek fire concurrently and leave media paused at the seek point.
     media.addEventListener('loadedmetadata', () => {
       media.currentTime = ep.playback_position;
-      media.play().catch(() => {});
+      media.play().catch(handleAutoplayBlocked);
     }, { once: true });
   } else {
-    media.play().catch(() => {});
+    media.play().catch(handleAutoplayBlocked);
   }
 
   // Position saving
@@ -937,11 +941,12 @@ function closeMobileSidebar() {
 }
 
 // ── SSE / device presence ──────────────────────────────────────────────────────
-function connectSSE() {
+function connectSSE(failCount = 0) {
   const url = `/api/events?device_id=${encodeURIComponent(DEVICE_ID)}&name=${encodeURIComponent(DEVICE_NAME)}`;
   const es = new EventSource(url);
 
   es.onmessage = async (e) => {
+    failCount = 0;
     const event = JSON.parse(e.data);
 
     if (event.type === 'connected' || event.type === 'devices_changed') {
@@ -1030,7 +1035,13 @@ function connectSSE() {
 
   es.onerror = () => {
     es.close();
-    setTimeout(connectSSE, 5000); // reconnect after 5s
+    failCount++;
+    if (failCount > 5) {
+      showToast('Connection lost — refresh the page to reconnect.', 'error');
+      return;
+    }
+    const delay = Math.min(5000 * Math.pow(2, failCount - 1), 60000);
+    setTimeout(() => connectSSE(failCount), delay);
   };
 }
 
