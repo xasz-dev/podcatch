@@ -94,6 +94,14 @@ async function loadFeeds() {
   renderFeeds();
 }
 
+function adjustFeedUnread(feedId, delta) {
+  const feed = state.feeds.find(f => f.id === feedId);
+  if (feed) {
+    feed.unread_count = Math.max(0, (feed.unread_count || 0) + delta);
+    renderFeeds();
+  }
+}
+
 function renderFeeds() {
   const list = $('feed-list');
   list.innerHTML = '';
@@ -270,7 +278,8 @@ async function toggleRead(ep) {
     el.classList.toggle('read', newVal);
     el.querySelector('.btn-mark-read').textContent = newVal ? '○' : '●';
   }
-  loadFeeds(); // refresh unread counts
+  adjustFeedUnread(ep.feed_id, newVal ? -1 : 1);
+  loadFeeds();
 }
 
 // ── Player ─────────────────────────────────────────────────────────────────────
@@ -467,6 +476,7 @@ media.addEventListener('ended', () => {
   if (state.playing) {
     const ep = state.playing.episode;
     API.episodes.update(ep.id, { is_read: true, playback_position: 0 });
+    if (!ep.is_read) adjustFeedUnread(ep.feed_id, -1);
     ep.is_read = true;
     const el = document.querySelector(`[data-ep-id="${ep.id}"]`);
     if (el) el.classList.add('read');
@@ -514,6 +524,7 @@ $('btn-end-played').addEventListener('click', () => {
   const ep = state.playing.episode;
   media.pause();
   API.episodes.update(ep.id, { is_read: true, playback_position: 0 });
+  if (!ep.is_read) adjustFeedUnread(ep.feed_id, -1);
   ep.is_read = true;
   const el = document.querySelector(`[data-ep-id="${ep.id}"]`);
   if (el) {
