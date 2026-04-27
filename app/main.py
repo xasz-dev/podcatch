@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -14,7 +15,7 @@ from database import get_db, init_db
 from feeds import detect_feed_type, fetch_feed_episodes, get_youtube_stream_url, resolve_feed
 from scheduler import start_scheduler
 
-__version__ = '0.2.1'
+__version__ = '0.2.2'
 
 # In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
 _devices: dict[str, dict] = {}
@@ -97,7 +98,7 @@ def list_feeds():
 @app.post('/api/feeds', status_code=201)
 async def add_feed(req: AddFeedRequest):
     feed_type = detect_feed_type(req.url)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         canonical_url, name = await loop.run_in_executor(None, resolve_feed, req.url, feed_type)
     except Exception as e:
@@ -111,7 +112,7 @@ async def add_feed(req: AddFeedRequest):
                 (display_name, canonical_url, feed_type, 1 if req.prefer_video else 0),
             )
             feed_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
-        except Exception:
+        except sqlite3.IntegrityError:
             raise HTTPException(409, 'Feed already exists')
 
     try:
@@ -167,7 +168,7 @@ async def refresh_feed(feed_id: int):
     if not feed:
         raise HTTPException(404)
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         count = await loop.run_in_executor(
             None, fetch_feed_episodes, feed['id'], feed['url'], feed['feed_type']
         )
@@ -390,7 +391,7 @@ async def stream_episode(episode_id: int, request: Request, video: Optional[bool
         stream_url, content_type = cached
     else:
         try:
-            stream_url, content_type = await asyncio.get_event_loop().run_in_executor(
+            stream_url, content_type = await asyncio.get_running_loop().run_in_executor(
                 None, get_youtube_stream_url, ep['youtube_id'], prefer_video
             )
             _set_cached_stream(ep['youtube_id'], prefer_video, stream_url, content_type)
@@ -403,10 +404,14 @@ async def stream_episode(episode_id: int, request: Request, video: Optional[bool
         upstream_headers['Range'] = range_header
 
     client = httpx.AsyncClient(follow_redirects=True, timeout=None)
-    upstream = await client.send(
-        httpx.Request('GET', stream_url, headers=upstream_headers),
-        stream=True,
-    )
+    try:
+        upstream = await client.send(
+            httpx.Request('GET', stream_url, headers=upstream_headers),
+            stream=True,
+        )
+    except Exception:
+        await client.aclose()
+        raise HTTPException(502, 'Could not reach upstream stream')
 
     resp_headers: dict[str, str] = {
         'Content-Type': upstream.headers.get('content-type', content_type),
@@ -439,12 +444,17 @@ async def stream_episode(episode_id: int, request: Request, video: Optional[bool
 async def search_podcasts(q: str, limit: int = 12):
     if not q.strip():
         return []
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            'https://itunes.apple.com/search',
-            params={'term': q, 'media': 'podcast', 'limit': limit, 'entity': 'podcast'},
-        )
-    resp.raise_for_status()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                'https://itunes.apple.com/search',
+                params={'term': q, 'media': 'podcast', 'limit': limit, 'entity': 'podcast'},
+            )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, f'Search service error: {e.response.status_code}')
+    except httpx.RequestError:
+        raise HTTPException(502, 'Search service unreachable')
     results = resp.json().get('results', [])
     return [
         {
@@ -476,14 +486,14 @@ async def prewarm(episode_ids: list[int]):
         if _get_cached_stream(ep['youtube_id'], prefer_video):
             return
         try:
-            url, ct = await asyncio.get_event_loop().run_in_executor(
+            url, ct = await asyncio.get_running_loop().run_in_executor(
                 None, get_youtube_stream_url, ep['youtube_id'], prefer_video
             )
             _set_cached_stream(ep['youtube_id'], prefer_video, url, ct)
         except Exception as e:
             print(f'Prewarm failed for episode {episode_id}: {e}')
 
-    asyncio.ensure_future(asyncio.gather(
+    asyncio.create_task(asyncio.gather(
         *[warm_one(eid) for eid in episode_ids[:5]],
         return_exceptions=True,
     ))

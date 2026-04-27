@@ -700,6 +700,13 @@ label input:focus { border-color: var(--accent); }
 .spinning { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Scrollbars ────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text2); }
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+
 /* ── Mobile ────────────────────────────────────────────────────────────────── */
 .mobile-only { display: none; }
 

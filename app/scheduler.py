@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from typing import Callable, Awaitable, Any
 
@@ -36,7 +37,10 @@ async def poll_due_feeds():
 
         if (now - last).total_seconds() >= feed['check_interval']:
             try:
-                count = fetch_feed_episodes(feed['id'], feed['url'], feed['feed_type'])
+                loop = asyncio.get_running_loop()
+                count = await loop.run_in_executor(
+                    None, fetch_feed_episodes, feed['id'], feed['url'], feed['feed_type']
+                )
                 if count > 0 and _broadcast_fn:
                     await _broadcast_fn({'type': 'new_episodes'})
             except Exception as e:

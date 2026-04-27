@@ -479,7 +479,11 @@ media.addEventListener('ended', () => {
     if (!ep.is_read) adjustFeedUnread(ep.feed_id, -1);
     ep.is_read = true;
     const el = document.querySelector(`[data-ep-id="${ep.id}"]`);
-    if (el) el.classList.add('read');
+    if (el) {
+      el.classList.add('read');
+      const markBtn = el.querySelector('.btn-mark-read');
+      if (markBtn) { markBtn.title = 'Mark unread'; markBtn.textContent = '○'; }
+    }
   }
   broadcastState();
 });
@@ -958,7 +962,8 @@ function connectSSE(failCount = 0) {
 
   es.onmessage = async (e) => {
     failCount = 0;
-    const event = JSON.parse(e.data);
+    let event;
+    try { event = JSON.parse(e.data); } catch (_) { return; }
 
     if (event.type === 'connected' || event.type === 'devices_changed') {
       const devices = await api('GET', '/api/devices');
