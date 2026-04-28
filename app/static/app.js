@@ -308,7 +308,7 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
 
   // Update UI immediately — before any awaits so there's instant feedback
   $('player').classList.remove('hidden');
-  $('player-title').textContent = ep.title;
+  setPlayerTitle(ep.title, ep.page_url);
   $('player-thumb').src = ep.thumbnail_url || '';
   $('player-thumb').style.display = ep.thumbnail_url ? '' : 'none';
   $('btn-play-pause').textContent = '⋯';
@@ -703,6 +703,15 @@ document.querySelector('.nav-item[data-feed-id="all"]').addEventListener('click'
 });
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
+function setPlayerTitle(title, pageUrl) {
+  const el = $('player-title');
+  if (pageUrl) {
+    el.innerHTML = `<a href="${esc(pageUrl)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>`;
+  } else {
+    el.textContent = title;
+  }
+}
+
 function esc(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -1191,7 +1200,7 @@ function stopRemoteTicker() {
 
 function updateRemotePlayerUI(rs) {
   if (!state.remote) return;
-  $('player-title').textContent = rs.episode?.title || `Playing on ${state.remote.deviceName}`;
+  setPlayerTitle(rs.episode?.title || `Playing on ${state.remote.deviceName}`, rs.episode?.page_url);
   $('player-thumb').src = rs.episode?.thumbnail_url || '';
   $('player-thumb').style.display = rs.episode?.thumbnail_url ? '' : 'none';
   $('btn-play-pause').textContent = rs.playing ? '⏸' : '▶';
@@ -1219,7 +1228,7 @@ async function enterRemoteMode(deviceId, deviceName) {
     updateRemotePlayerUI(rs);
     if (rs.playing) startRemoteTicker();
   } else {
-    $('player-title').textContent = `Connecting to ${deviceName}…`;
+    setPlayerTitle(`Connecting to ${deviceName}…`, null);
     $('btn-play-pause').textContent = '⋯';
   }
 
@@ -1236,7 +1245,7 @@ function exitRemoteMode() {
 
   if (state.playing) {
     $('player').classList.remove('hidden');
-    $('player-title').textContent = state.playing.episode.title;
+    setPlayerTitle(state.playing.episode.title, state.playing.episode.page_url);
     $('player-thumb').src = state.playing.episode.thumbnail_url || '';
     $('player-thumb').style.display = state.playing.episode.thumbnail_url ? '' : 'none';
     $('btn-play-pause').textContent = media.paused ? '▶' : '⏸';
