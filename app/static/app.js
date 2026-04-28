@@ -49,13 +49,26 @@ const state = {
 const PAGE_SIZE = 50;
 
 // ── API helpers ────────────────────────────────────────────────────────────────
+let _sessionExpiredToastShown = false;
+
 async function api(method, path, body) {
   const opts = { method, headers: {} };
   if (body) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(path, opts);
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (_) {
+    // fetch() rejects on network failure or CORS errors (e.g. Cloudflare Access
+    // session expiry redirecting API calls to a login page without CORS headers).
+    if (!_sessionExpiredToastShown) {
+      _sessionExpiredToastShown = true;
+      showToast('Connection lost — reload the page to reconnect.', 'error');
+    }
+    throw new Error('Network error');
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || res.statusText);

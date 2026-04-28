@@ -15,7 +15,7 @@ from database import get_db, init_db
 from feeds import detect_feed_type, fetch_feed_episodes, get_youtube_stream_url, resolve_feed
 from scheduler import start_scheduler
 
-__version__ = '0.2.2'
+__version__ = '0.2.3'
 
 # In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
 _devices: dict[str, dict] = {}
