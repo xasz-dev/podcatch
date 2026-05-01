@@ -51,8 +51,15 @@ const PAGE_SIZE = 50;
 // ── API helpers ────────────────────────────────────────────────────────────────
 let _sessionExpiredToastShown = false;
 
+function _handleSessionExpired() {
+  if (_sessionExpiredToastShown) return;
+  _sessionExpiredToastShown = true;
+  showToast('Session expired — reloading…', 'error');
+  setTimeout(() => window.location.reload(), 1500);
+}
+
 async function api(method, path, body) {
-  const opts = { method, headers: {} };
+  const opts = { method, headers: {}, redirect: 'manual' };
   if (body) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
@@ -61,13 +68,18 @@ async function api(method, path, body) {
   try {
     res = await fetch(path, opts);
   } catch (_) {
-    // fetch() rejects on network failure or CORS errors (e.g. Cloudflare Access
-    // session expiry redirecting API calls to a login page without CORS headers).
+    // Genuine network failure (offline, etc.)
     if (!_sessionExpiredToastShown) {
       _sessionExpiredToastShown = true;
       showToast('Connection lost — reload the page to reconnect.', 'error');
     }
     throw new Error('Network error');
+  }
+  // An opaque redirect means a proxy (e.g. Cloudflare Access) intercepted the
+  // request and redirected to a login page — browser cookie was lost overnight.
+  if (res.type === 'opaqueredirect') {
+    _handleSessionExpired();
+    throw new Error('Session expired');
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
