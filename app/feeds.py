@@ -154,7 +154,7 @@ def _parse_youtube_feed(feed_id: int, url: str) -> list[dict]:
             'media_url': None,
             'youtube_id': youtube_id,
             'duration': None,
-            'published_at': _format_date(entry.get('published_parsed')),
+            'published_at': _format_date(entry.get('published_parsed') or entry.get('updated_parsed')),
             'thumbnail_url': thumbnail,
             'has_video': 1,
         })

@@ -990,11 +990,19 @@ function closeMobileSidebar() {
 }
 
 // ── SSE / device presence ──────────────────────────────────────────────────────
+let _sseGen = 0;
+let _sseSource = null;
+
 function connectSSE(failCount = 0) {
+  const gen = ++_sseGen;
+  if (_sseSource) { _sseSource.close(); _sseSource = null; }
+
   const url = `/api/events?device_id=${encodeURIComponent(DEVICE_ID)}&name=${encodeURIComponent(DEVICE_NAME)}`;
   const es = new EventSource(url);
+  _sseSource = es;
 
   es.onmessage = async (e) => {
+    if (gen !== _sseGen) return;
     failCount = 0;
     let event;
     try { event = JSON.parse(e.data); } catch (_) { return; }
@@ -1084,16 +1092,20 @@ function connectSSE(failCount = 0) {
   };
 
   es.onerror = () => {
+    if (gen !== _sseGen) return;
     es.close();
+    _sseSource = null;
     failCount++;
-    if (failCount > 5) {
-      showToast('Connection lost — refresh the page to reconnect.', 'error');
-      return;
+    if (failCount === 6) {
+      showToast('Connection lost — will keep retrying in the background.', 'error');
     }
-    const delay = Math.min(5000 * Math.pow(2, failCount - 1), 60000);
-    setTimeout(() => connectSSE(failCount), delay);
+    const delay = Math.min(5000 * Math.pow(2, Math.min(failCount - 1, 6)), 60000);
+    setTimeout(() => { if (gen === _sseGen) connectSSE(failCount); }, delay);
   };
 }
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden) connectSSE(); });
+window.addEventListener('online', () => connectSSE());
 
 function updateTransferButton() {
   // Button is always visible in the header; nothing to toggle.
