@@ -224,8 +224,10 @@ def _fetch_playlist_ytdlp(feed_id: int, playlist_id: str) -> list[dict]:
         old_missing  = [(i, yt) for i, yt in needs_date
                         if episodes[i]['guid'] in known and known[episodes[i]['guid']] is None]
 
-        # Process all new episodes + up to 10 backlog entries per refresh
-        to_enrich = new_missing + old_missing[:10]
+        # Process all new episodes + up to 10 backlog entries per refresh.
+        # Reverse old_missing so highest playlist index (newest addition) comes first,
+        # ensuring recent episodes are dated before older backlog entries.
+        to_enrich = new_missing + list(reversed(old_missing))[:10]
         if to_enrich:
             _enrich_playlist_dates(episodes, to_enrich)
 
