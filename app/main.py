@@ -15,7 +15,7 @@ from database import get_db, init_db
 from feeds import detect_feed_type, fetch_feed_episodes, get_youtube_stream_url, resolve_feed
 from scheduler import start_scheduler
 
-__version__ = '0.2.8'
+__version__ = '0.2.9'
 
 # In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
 _devices: dict[str, dict] = {}
@@ -190,10 +190,10 @@ def list_episodes(
     offset: int = 0,
 ):
     sort_clause = {
-        'newest': 'e.published_at DESC NULLS LAST, e.created_at DESC',
-        'oldest': 'e.published_at ASC NULLS LAST, e.created_at ASC',
-        'unread':  'e.is_read ASC, e.published_at DESC NULLS LAST',
-    }.get(sort, 'e.published_at DESC NULLS LAST, e.created_at DESC')
+        'newest': 'COALESCE(e.published_at, e.created_at) DESC',
+        'oldest': 'COALESCE(e.published_at, e.created_at) ASC',
+        'unread':  'e.is_read ASC, COALESCE(e.published_at, e.created_at) DESC',
+    }.get(sort, 'COALESCE(e.published_at, e.created_at) DESC')
 
     query = '''SELECT e.*, f.name as feed_name, f.prefer_video as feed_prefer_video
                FROM episodes e JOIN feeds f ON e.feed_id = f.id'''
