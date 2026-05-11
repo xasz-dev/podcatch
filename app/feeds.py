@@ -210,11 +210,24 @@ def _fetch_playlist_ytdlp(feed_id: int, playlist_id: str) -> list[dict]:
             'has_video': 1,
         })
 
-    # Flat mode doesn't always return upload_date for custom playlists.
-    # Do individual lookups for episodes that are still missing a date,
-    # capped to avoid excessive delays on large initial fetches.
     if needs_date:
-        _enrich_playlist_dates(episodes, needs_date[:15])
+        # Don't re-enrich episodes that already have a date stored.
+        # Separate truly-new episodes (not yet in DB) from existing backlog,
+        # so new ones always get dates regardless of how large the backlog is.
+        with get_db() as db:
+            rows = db.execute(
+                'SELECT guid, published_at FROM episodes WHERE feed_id = ?', (feed_id,)
+            ).fetchall()
+        known = {r[0]: r[1] for r in rows}
+
+        new_missing  = [(i, yt) for i, yt in needs_date if episodes[i]['guid'] not in known]
+        old_missing  = [(i, yt) for i, yt in needs_date
+                        if episodes[i]['guid'] in known and known[episodes[i]['guid']] is None]
+
+        # Process all new episodes + up to 10 backlog entries per refresh
+        to_enrich = new_missing + old_missing[:10]
+        if to_enrich:
+            _enrich_playlist_dates(episodes, to_enrich)
 
     return episodes
 
