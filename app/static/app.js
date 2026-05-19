@@ -510,7 +510,13 @@ media.addEventListener('ended', () => {
       if (markBtn) { markBtn.title = 'Mark unread'; markBtn.textContent = '○'; }
     }
   }
+  clearInterval(positionInterval);
+  state.playing = null;
+  $('player').classList.add('hidden');
+  setVideoMode(false);
+  document.querySelectorAll('.episode-item').forEach(el => el.classList.remove('playing', 'loading'));
   broadcastState();
+  prependNewEpisodes();
 });
 
 $('btn-play-pause').addEventListener('click', () => {
