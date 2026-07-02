@@ -1,10 +1,13 @@
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 import feedparser
 import yt_dlp
 
 from database import get_db
+
+logger = logging.getLogger(__name__)
 
 
 def detect_feed_type(url: str) -> str:
@@ -79,11 +82,11 @@ def fetch_feed_episodes(feed_id: int, url: str, feed_type: str) -> int:
                 if ep.get('published_at'):
                     db.execute(
                         '''UPDATE episodes SET published_at = :published_at
-                           WHERE feed_id = :feed_id AND guid = :guid''',
+                           WHERE feed_id = :feed_id AND guid = :guid AND published_at IS NULL''',
                         {'published_at': ep['published_at'], 'feed_id': ep['feed_id'], 'guid': ep['guid']},
                     )
             except Exception as e:
-                print(f'Error saving episode: {e}')
+                logger.warning(f'Error saving episode: {e}')
         db.execute("UPDATE feeds SET last_checked = datetime('now') WHERE id = ?", (feed_id,))
     return saved
 
@@ -189,7 +192,7 @@ def _fetch_playlist_ytdlp(feed_id: int, playlist_id: str) -> list[dict]:
         published_at = None
         ts = entry.get('release_timestamp') or entry.get('timestamp')
         if ts:
-            published_at = datetime.utcfromtimestamp(ts).isoformat() + 'Z'
+            published_at = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace('+00:00', 'Z')
         if not published_at:
             published_at = _parse_upload_date(entry.get('upload_date'))
 
@@ -224,10 +227,13 @@ def _fetch_playlist_ytdlp(feed_id: int, playlist_id: str) -> list[dict]:
         old_missing  = [(i, yt) for i, yt in needs_date
                         if episodes[i]['guid'] in known and known[episodes[i]['guid']] is None]
 
-        # Process all new episodes + up to 10 backlog entries per refresh.
-        # Reverse old_missing so highest playlist index (newest addition) comes first,
-        # ensuring recent episodes are dated before older backlog entries.
-        to_enrich = new_missing + list(reversed(old_missing))[:10]
+        # Enrich all-new-first, up to a combined cap of 25 per refresh (each entry is a
+        # sequential yt-dlp extract, and this runs inside the awaited request — an
+        # uncapped first fetch of a large playlist would exceed Cloudflare's 100s limit).
+        # Reverse old_missing so highest playlist index (newest addition) comes first.
+        # The backlog drains a further 25 entries per subsequent scheduled refresh, so
+        # undated episodes self-heal over time.
+        to_enrich = (new_missing + list(reversed(old_missing)))[:25]
         if to_enrich:
             _enrich_playlist_dates(episodes, to_enrich)
 
@@ -246,7 +252,10 @@ def _enrich_playlist_dates(episodes: list[dict], missing: list[tuple[int, str]])
                 if not info:
                     continue
                 ts = info.get('release_timestamp') or info.get('timestamp')
-                date = datetime.utcfromtimestamp(ts).isoformat() + 'Z' if ts else None
+                date = (
+                    datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace('+00:00', 'Z')
+                    if ts else None
+                )
                 if not date:
                     date = _parse_upload_date(info.get('upload_date'))
                 if date:

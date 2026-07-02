@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.2.11 — 2026-07-02
+
+### Bug fixes
+- Fix track-switch position saves being written to the wrong episode: outgoing position is now saved before `state.playing` changes, and the switch-in-progress pause handler no longer overwrites it with the new episode's stale `currentTime`
+- Fix stale `loadedmetadata` seek listeners surviving an episode switch and seeking the new episode to the previous one's saved position
+- Fix `_mediaRetrying` never resetting after a successful retry, so a second stale-stream-URL failure on a long listening session showed an error instead of retrying
+- Fix SSE reconnect race where a superseded connection's cleanup could delete a newly-registered device, making it vanish from the device list despite being live
+- Avoid unnecessary SSE reconnects on every tab focus; only reconnect if the connection is actually closed
+- Fix fire-and-forget prewarm background task being eligible for garbage collection mid-run
+- Enforce the real `check_interval` floor (900s, matching the scheduler's 15-minute poll cadence) instead of the unenforceable 60s the API accepted
+- Fix `published_at` backfill rewriting every episode row on every feed poll instead of only rows missing a date
+- Cap `limit`/`offset` on episode listing to prevent unbounded queries
+- Replace deprecated `datetime.utcfromtimestamp` with a timezone-aware equivalent
+- Cap playlist date-enrichment work per fetch so adding a large custom YouTube playlist no longer risks timing out; the backlog now drains over subsequent scheduled refreshes
+
+### Improvements
+- Add Media Session API support: lock-screen artwork/title and headphone/hardware playback controls
+- Add keyboard shortcuts (Space to play/pause, ←/→ to seek) that stay out of the way while typing in dialogs
+- "Refresh all" now reports how many feeds failed instead of silently aborting on the first error
+- Replace backend `print()` calls with structured logging
+- Document the single-worker constraint in the Dockerfile
+- Exclude `.git`, `.env`, and other non-deployable files from the NAS rsync
+
 ## 0.2.0 — 2026-04-17
 
 ### Remote control

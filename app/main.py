@@ -1,12 +1,13 @@
 import asyncio
 import json
+import logging
 import sqlite3
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -15,7 +16,10 @@ from database import get_db, init_db
 from feeds import detect_feed_type, fetch_feed_episodes, get_youtube_stream_url, resolve_feed
 from scheduler import start_scheduler
 
-__version__ = '0.2.10'
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+__version__ = '0.2.11'
 
 # In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
 _devices: dict[str, dict] = {}
@@ -23,6 +27,10 @@ _devices: dict[str, dict] = {}
 # Stream URL cache: (youtube_id, prefer_video) -> (url, content_type, expires_at)
 _stream_cache: dict[tuple, tuple] = {}
 _CACHE_TTL = 4 * 3600  # 4 hours
+
+# Keeps references to fire-and-forget background tasks so the event loop's weak
+# ref to them doesn't let them get GC'd mid-run.
+_background_tasks: set = set()
 
 
 def _get_cached_stream(youtube_id: str, prefer_video: bool) -> tuple[str, str] | None:
@@ -118,7 +126,7 @@ async def add_feed(req: AddFeedRequest):
     try:
         await loop.run_in_executor(None, fetch_feed_episodes, feed_id, canonical_url, feed_type)
     except Exception as e:
-        print(f'Initial fetch error for feed {feed_id}: {e}')
+        logger.warning(f'Initial fetch error for feed {feed_id}: {e}')
 
     with get_db() as db:
         feed = db.execute('SELECT * FROM feeds WHERE id = ?', (feed_id,)).fetchone()
@@ -136,8 +144,8 @@ def update_feed(feed_id: int, req: UpdateFeedRequest):
                 (1 if req.prefer_video else 0, feed_id),
             )
         if req.check_interval is not None:
-            if not (60 <= req.check_interval <= 86400):
-                raise HTTPException(400, 'check_interval must be between 60 and 86400 seconds')
+            if not (900 <= req.check_interval <= 86400):
+                raise HTTPException(400, 'check_interval must be between 900 and 86400 seconds')
             db.execute(
                 'UPDATE feeds SET check_interval = ? WHERE id = ?',
                 (req.check_interval, feed_id),
@@ -186,8 +194,8 @@ def list_episodes(
     feed_id: Optional[int] = None,
     unread: bool = False,
     sort: str = 'newest',
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
     sort_clause = {
         'newest': 'COALESCE(e.published_at, e.created_at) DESC',
@@ -269,8 +277,9 @@ async def sse_stream(device_id: str, name: str):
                 except asyncio.TimeoutError:
                     yield ': keepalive\n\n'
         finally:
-            _devices.pop(device_id, None)
-            await _broadcast({'type': 'devices_changed'}, exclude=device_id)
+            if _devices.get(device_id, {}).get('queue') is queue:
+                _devices.pop(device_id, None)
+                await _broadcast({'type': 'devices_changed'}, exclude=device_id)
 
     return StreamingResponse(
         generate(),
@@ -491,12 +500,14 @@ async def prewarm(episode_ids: list[int]):
             )
             _set_cached_stream(ep['youtube_id'], prefer_video, url, ct)
         except Exception as e:
-            print(f'Prewarm failed for episode {episode_id}: {e}')
+            logger.warning(f'Prewarm failed for episode {episode_id}: {e}')
 
-    asyncio.create_task(asyncio.gather(
+    task = asyncio.create_task(asyncio.gather(
         *[warm_one(eid) for eid in episode_ids[:5]],
         return_exceptions=True,
     ))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return {'ok': True}
 
 

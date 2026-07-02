@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Callable, Awaitable, Any
 
@@ -6,6 +7,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from database import get_db
 from feeds import fetch_feed_episodes
+
+logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 _broadcast_fn: Callable[[dict], Awaitable[Any]] | None = None
@@ -44,4 +47,4 @@ async def poll_due_feeds():
                 if count > 0 and _broadcast_fn:
                     await _broadcast_fn({'type': 'new_episodes'})
             except Exception as e:
-                print(f'Feed {feed["id"]} refresh error: {e}')
+                logger.warning(f'Feed {feed["id"]} refresh error: {e}')

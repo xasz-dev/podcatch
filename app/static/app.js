@@ -310,11 +310,33 @@ async function toggleRead(ep) {
 // ── Player ─────────────────────────────────────────────────────────────────────
 let positionInterval = null;
 let _mediaRetrying = false;
+let _switchingEpisode = false;
+let _pendingSeekListener = null;
+
+function clearPendingSeek() {
+  if (_pendingSeekListener) {
+    media.removeEventListener('loadedmetadata', _pendingSeekListener);
+    _pendingSeekListener = null;
+  }
+}
 
 async function playEpisode(ep, preferVideo, skipFetch = false) {
   if (state.remote) exitRemoteMode();
   _mediaRetrying = false;
+  clearPendingSeek();
+
+  // Save the outgoing episode's position before state changes. The pause event
+  // fired by media.src reassignment runs as a macrotask (after all sync code), so
+  // state.playing already points to the new episode by the time it fires — causing
+  // the old currentTime to be written to the wrong episode record.
+  if (state.playing && media.currentTime > 0) {
+    const prev = state.playing.episode;
+    prev.playback_position = Math.floor(media.currentTime);
+    API.episodes.update(prev.id, { playback_position: prev.playback_position });
+  }
+  _switchingEpisode = true;
   state.playing = { episode: ep, preferVideo };
+  updateMediaSession(ep);
 
   const src = `/api/stream/${ep.id}${preferVideo ? '?video=true' : '?video=false'}`;
 
@@ -350,10 +372,12 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
   if (ep.playback_position > 5) {
     // Seek to saved position first, then play — avoids a race where play() and
     // a mid-stream seek fire concurrently and leave media paused at the seek point.
-    media.addEventListener('loadedmetadata', () => {
+    _pendingSeekListener = () => {
+      _pendingSeekListener = null;
       media.currentTime = ep.playback_position;
       media.play().catch(handleAutoplayBlocked);
-    }, { once: true });
+    };
+    media.addEventListener('loadedmetadata', _pendingSeekListener, { once: true });
   } else {
     media.play().catch(handleAutoplayBlocked);
   }
@@ -367,6 +391,32 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
       broadcastState();
     }
   }, 10000);
+}
+
+// ── Media Session (lock-screen / hardware controls) ─────────────────────────────
+function updateMediaSession(ep) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: ep.title,
+    artist: ep.feed_name || 'podcatch',
+    artwork: ep.thumbnail_url ? [{ src: ep.thumbnail_url }] : [],
+  });
+}
+
+function initMediaSessionHandlers() {
+  if (!('mediaSession' in navigator)) return;
+  const handlers = {
+    play: () => media.play(),
+    pause: () => media.pause(),
+    seekbackward: () => { media.currentTime -= 10; },
+    seekforward: () => { media.currentTime += 30; },
+    seekto: (details) => { if (details.seekTime != null) media.currentTime = details.seekTime; },
+  };
+  for (const [action, handler] of Object.entries(handlers)) {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler);
+    } catch (_) {}
+  }
 }
 
 function setVideoMode(show) {
@@ -445,6 +495,8 @@ media.addEventListener('click', () => { media.paused ? media.play() : media.paus
 media.addEventListener('play', () => { $('btn-play-pause').textContent = '⋯'; });
 media.addEventListener('playing', () => {
   $('btn-play-pause').textContent = '⏸';
+  _switchingEpisode = false;
+  _mediaRetrying = false;
   document.querySelectorAll('.episode-item.loading').forEach(el => el.classList.remove('loading'));
   broadcastState();
 });
@@ -461,8 +513,18 @@ media.addEventListener('error', async () => {
     const ep = state.playing.episode;
     const pv = state.playing.preferVideo;
     $('btn-play-pause').textContent = '⋯';
+    clearPendingSeek();
     media.src = `/api/stream/${ep.id}?video=${pv}&no_cache=1`;
-    media.play().catch(() => {});
+    if (ep.playback_position > 5) {
+      _pendingSeekListener = () => {
+        _pendingSeekListener = null;
+        media.currentTime = ep.playback_position;
+        media.play().catch(() => {});
+      };
+      media.addEventListener('loadedmetadata', _pendingSeekListener, { once: true });
+    } else {
+      media.play().catch(() => {});
+    }
     return;
   }
   _mediaRetrying = false;
@@ -482,7 +544,9 @@ media.addEventListener('error', async () => {
 media.addEventListener('pause', () => {
   // Don't overwrite the loading indicator if we're switching tracks
   if ($('btn-play-pause').textContent !== '⋯') $('btn-play-pause').textContent = '▶';
-  if (state.playing && media.currentTime > 0) {
+  // Skip save during track switch — the outgoing position was already saved in playEpisode
+  // and currentTime here would be the old episode's value, not the new one.
+  if (!_switchingEpisode && state.playing && media.currentTime > 0) {
     const pos = Math.floor(media.currentTime);
     API.episodes.update(state.playing.episode.id, { playback_position: pos });
     state.playing.episode.playback_position = pos;
@@ -694,7 +758,9 @@ $('btn-refresh-all').addEventListener('click', async () => {
   btn.classList.add('spinning');
   btn.disabled = true;
   try {
-    await Promise.all(state.feeds.map(f => API.feeds.refresh(f.id)));
+    const results = await Promise.allSettled(state.feeds.map(f => API.feeds.refresh(f.id)));
+    const failed = results.filter(r => r.status === 'rejected').length;
+    if (failed) showToast(`${failed} feed${failed > 1 ? 's' : ''} failed to refresh`, 'error');
     await loadFeeds();
     await loadEpisodes(true);
   } finally {
@@ -1110,7 +1176,11 @@ function connectSSE(failCount = 0) {
   };
 }
 
-document.addEventListener('visibilitychange', () => { if (!document.hidden) connectSSE(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && (!_sseSource || _sseSource.readyState === EventSource.CLOSED)) {
+    connectSSE();
+  }
+});
 window.addEventListener('online', () => connectSSE());
 
 function updateTransferButton() {
@@ -1313,8 +1383,36 @@ function sendRemoteSeek(delta) {
   }
 }
 
+// ── Keyboard shortcuts ───────────────────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  if (!state.playing) return;
+  if (e.target.closest('input, textarea, select, dialog')) return;
+
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (state.remote) {
+      $('btn-play-pause').click();
+    } else {
+      media.paused ? media.play() : media.pause();
+    }
+  } else if (e.code === 'ArrowLeft') {
+    if (state.remote) {
+      sendRemoteSeek(-10);
+    } else {
+      media.currentTime -= 10;
+    }
+  } else if (e.code === 'ArrowRight') {
+    if (state.remote) {
+      sendRemoteSeek(30);
+    } else {
+      media.currentTime += 30;
+    }
+  }
+});
+
 // ── Init ───────────────────────────────────────────────────────────────────────
 (async () => {
+  initMediaSessionHandlers();
   connectSSE();
   await loadFeeds();
   await loadEpisodes(true);
