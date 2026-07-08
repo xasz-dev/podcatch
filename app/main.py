@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import os
+import re
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -8,18 +10,18 @@ from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from database import get_db, init_db
+from database import get_db, get_setting, init_db
 from feeds import detect_feed_type, fetch_feed_episodes, get_youtube_stream_url, resolve_feed
 from scheduler import start_scheduler
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-__version__ = '0.2.11'
+__version__ = '0.2.13'
 
 # In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
 _devices: dict[str, dict] = {}
@@ -31,6 +33,115 @@ _CACHE_TTL = 4 * 3600  # 4 hours
 # Keeps references to fire-and-forget background tasks so the event loop's weak
 # ref to them doesn't let them get GC'd mid-run.
 _background_tasks: set = set()
+
+# Local cache of downloaded media files, so replays don't re-hit the original
+# source (faster, and resilient to a YouTube video or RSS media URL going dead).
+DOWNLOAD_DIR = os.environ.get('DOWNLOAD_DIR', '/data/downloads')
+
+# episode_ids currently mid-download, so a second trigger doesn't start a duplicate fetch
+_downloading: set[int] = set()
+
+
+def _extension_for(content_type: str, url: str) -> str:
+    ct = (content_type or '').lower()
+    if 'webm' in ct:
+        return '.webm'
+    if 'mp4' in ct:
+        return '.mp4'
+    if 'mpeg' in ct or 'mp3' in ct:
+        return '.mp3'
+    if 'm4a' in ct or 'aac' in ct:
+        return '.m4a'
+    path = httpx.URL(url).path.lower()
+    for ext in ('.mp3', '.m4a', '.aac', '.ogg', '.wav', '.mp4', '.webm'):
+        if path.endswith(ext):
+            return ext
+    return '.mp4' if 'video' in ct else '.mp3'
+
+
+async def _download_episode(episode_id: int):
+    """Fetch an episode's media to local disk in the background. Best-effort —
+    failures just mean the next play falls back to the live source as before."""
+    if episode_id in _downloading:
+        return
+    _downloading.add(episode_id)
+    try:
+        with get_db() as db:
+            ep = db.execute(
+                '''SELECT e.*, f.prefer_video as feed_prefer_video
+                   FROM episodes e JOIN feeds f ON e.feed_id = f.id
+                   WHERE e.id = ?''',
+                (episode_id,),
+            ).fetchone()
+        if not ep or ep['downloaded_path']:
+            return
+
+        if ep['media_url'] and not ep['youtube_id']:
+            stream_url, content_type = ep['media_url'], 'audio/mpeg'
+        elif ep['youtube_id']:
+            try:
+                stream_url, content_type = await asyncio.get_running_loop().run_in_executor(
+                    None, get_youtube_stream_url, ep['youtube_id'], bool(ep['feed_prefer_video'])
+                )
+            except Exception as e:
+                logger.warning(f'Download: could not resolve stream for episode {episode_id}: {e}')
+                return
+        else:
+            return
+
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        final_path = os.path.join(DOWNLOAD_DIR, f'{episode_id}{_extension_for(content_type, stream_url)}')
+        tmp_path = final_path + '.part'
+
+        client = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=httpx.Timeout(connect=15.0, read=30.0, write=30.0, pool=15.0),
+        )
+        try:
+            async with client.stream('GET', stream_url, headers={'User-Agent': 'Mozilla/5.0'}) as resp:
+                resp.raise_for_status()
+                with open(tmp_path, 'wb') as f:
+                    async for chunk in resp.aiter_bytes(65536):
+                        f.write(chunk)
+            os.replace(tmp_path, final_path)
+        except Exception as e:
+            logger.warning(f'Download failed for episode {episode_id}: {e}')
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            return
+        finally:
+            await client.aclose()
+
+        with get_db() as db:
+            db.execute(
+                "UPDATE episodes SET downloaded_path = ?, downloaded_at = datetime('now') WHERE id = ?",
+                (final_path, episode_id),
+            )
+        logger.info(f'Downloaded episode {episode_id} to {final_path}')
+    except Exception as e:
+        logger.warning(f'Download failed for episode {episode_id}: {e}')
+    finally:
+        _downloading.discard(episode_id)
+
+
+def _schedule_download(episode_id: int):
+    task = asyncio.create_task(_download_episode(episode_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+def _forget_download(episode_id: int, path: str):
+    """Drop a cached download that's suspected bad (client retried with no_cache)."""
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError as e:
+        logger.warning(f'Could not remove stale download for episode {episode_id}: {e}')
+    with get_db() as db:
+        db.execute(
+            'UPDATE episodes SET downloaded_path = NULL, downloaded_at = NULL WHERE id = ?',
+            (episode_id,),
+        )
 
 
 def _get_cached_stream(youtube_id: str, prefer_video: bool) -> tuple[str, str] | None:
@@ -63,7 +174,7 @@ async def _broadcast(event: dict, exclude: str | None = None):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    start_scheduler(_broadcast)
+    start_scheduler(_broadcast, _schedule_download)
     yield
 
 
@@ -82,6 +193,7 @@ class UpdateFeedRequest(BaseModel):
     name: Optional[str] = None
     prefer_video: Optional[bool] = None
     check_interval: Optional[int] = None
+    auto_download: Optional[bool] = None
 
 
 class UpdateEpisodeRequest(BaseModel):
@@ -105,6 +217,8 @@ def list_feeds():
 
 @app.post('/api/feeds', status_code=201)
 async def add_feed(req: AddFeedRequest):
+    if not re.match(r'^https?://', req.url, re.IGNORECASE):
+        raise HTTPException(400, 'Feed URL must start with http:// or https://')
     feed_type = detect_feed_type(req.url)
     loop = asyncio.get_running_loop()
     try:
@@ -150,6 +264,11 @@ def update_feed(feed_id: int, req: UpdateFeedRequest):
                 'UPDATE feeds SET check_interval = ? WHERE id = ?',
                 (req.check_interval, feed_id),
             )
+        if req.auto_download is not None:
+            db.execute(
+                'UPDATE feeds SET auto_download = ? WHERE id = ?',
+                (1 if req.auto_download else 0, feed_id),
+            )
         feed = db.execute('SELECT * FROM feeds WHERE id = ?', (feed_id,)).fetchone()
     if not feed:
         raise HTTPException(404)
@@ -165,7 +284,10 @@ def delete_feed(feed_id: int):
 @app.post('/api/feeds/{feed_id}/mark-all-read', status_code=204)
 async def mark_all_read(feed_id: int):
     with get_db() as db:
-        db.execute('UPDATE episodes SET is_read = 1 WHERE feed_id = ?', (feed_id,))
+        db.execute(
+            "UPDATE episodes SET is_read = 1, read_at = datetime('now') WHERE feed_id = ? AND is_read = 0",
+            (feed_id,),
+        )
     await _broadcast({'type': 'feeds_changed'})
 
 
@@ -177,13 +299,16 @@ async def refresh_feed(feed_id: int):
         raise HTTPException(404)
     try:
         loop = asyncio.get_running_loop()
-        count = await loop.run_in_executor(
+        count, new_ids = await loop.run_in_executor(
             None, fetch_feed_episodes, feed['id'], feed['url'], feed['feed_type']
         )
     except Exception as e:
         raise HTTPException(500, str(e))
     if count > 0:
         await _broadcast({'type': 'new_episodes'})
+    if feed['auto_download']:
+        for eid in new_ids:
+            _schedule_download(eid)
     return {'new_episodes': count}
 
 
@@ -193,6 +318,7 @@ async def refresh_feed(feed_id: int):
 def list_episodes(
     feed_id: Optional[int] = None,
     unread: bool = False,
+    q: Optional[str] = None,
     sort: str = 'newest',
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -213,6 +339,9 @@ def list_episodes(
         params.append(feed_id)
     if unread:
         conditions.append('e.is_read = 0')
+    if q:
+        conditions.append('e.title LIKE ?')
+        params.append(f'%{q}%')
     if conditions:
         query += ' WHERE ' + ' AND '.join(conditions)
     query += f' ORDER BY {sort_clause} LIMIT ? OFFSET ?'
@@ -220,6 +349,20 @@ def list_episodes(
 
     with get_db() as db:
         rows = db.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get('/api/episodes/continue')
+def list_continue_episodes(limit: int = Query(20, ge=1, le=100)):
+    with get_db() as db:
+        rows = db.execute(
+            '''SELECT e.*, f.name as feed_name, f.prefer_video as feed_prefer_video
+               FROM episodes e JOIN feeds f ON e.feed_id = f.id
+               WHERE e.playback_position > 0 AND e.is_read = 0
+               ORDER BY e.last_played_at DESC
+               LIMIT ?''',
+            (limit,),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -241,13 +384,19 @@ def get_episode(episode_id: int):
 async def update_episode(episode_id: int, req: UpdateEpisodeRequest):
     with get_db() as db:
         if req.is_read is not None:
-            db.execute(
-                'UPDATE episodes SET is_read = ? WHERE id = ?',
-                (1 if req.is_read else 0, episode_id),
-            )
+            if req.is_read:
+                db.execute(
+                    "UPDATE episodes SET is_read = 1, read_at = datetime('now') WHERE id = ?",
+                    (episode_id,),
+                )
+            else:
+                db.execute(
+                    'UPDATE episodes SET is_read = 0, read_at = NULL WHERE id = ?',
+                    (episode_id,),
+                )
         if req.playback_position is not None:
             db.execute(
-                'UPDATE episodes SET playback_position = ? WHERE id = ?',
+                "UPDATE episodes SET playback_position = ?, last_played_at = datetime('now') WHERE id = ?",
                 (req.playback_position, episode_id),
             )
         ep = db.execute('SELECT * FROM episodes WHERE id = ?', (episode_id,)).fetchone()
@@ -296,6 +445,32 @@ def list_devices():
 @app.get('/api/version')
 def get_version():
     return {'version': __version__}
+
+
+# ── Settings ───────────────────────────────────────────────────────────────────
+
+class UpdateSettingsRequest(BaseModel):
+    cleanup_days: Optional[int] = None
+
+
+@app.get('/api/settings')
+def get_settings():
+    with get_db() as db:
+        return {'cleanup_days': int(get_setting(db, 'cleanup_days'))}
+
+
+@app.patch('/api/settings')
+def update_settings(req: UpdateSettingsRequest):
+    with get_db() as db:
+        if req.cleanup_days is not None:
+            if req.cleanup_days < 1:
+                raise HTTPException(400, 'cleanup_days must be at least 1')
+            db.execute(
+                'INSERT INTO settings (key, value) VALUES (?, ?) '
+                'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+                ('cleanup_days', str(req.cleanup_days)),
+            )
+        return {'cleanup_days': int(get_setting(db, 'cleanup_days'))}
 
 
 class HandoffRequest(BaseModel):
@@ -384,14 +559,28 @@ async def stream_episode(episode_id: int, request: Request, video: Optional[bool
     if not ep:
         raise HTTPException(404)
 
+    # Serve the locally cached copy if we have one — faster replay, and immune to
+    # the original source going away. Range requests (seeking) work natively via
+    # FileResponse. no_cache means the client is retrying after a playback error,
+    # so treat the cached copy as suspect: drop it and fall through to a fresh fetch.
+    if ep['downloaded_path']:
+        if no_cache:
+            _forget_download(episode_id, ep['downloaded_path'])
+        elif os.path.exists(ep['downloaded_path']):
+            return FileResponse(ep['downloaded_path'])
+
     prefer_video = video if video is not None else bool(ep['feed_prefer_video'])
 
-    # RSS/Substack: redirect directly to the CDN URL
+    # RSS/Substack: redirect directly to the CDN URL, and kick off a background
+    # download so the next play can serve the local copy instead.
     if ep['media_url'] and not ep['youtube_id']:
+        _schedule_download(episode_id)
         return RedirectResponse(ep['media_url'])
 
     if not ep['youtube_id']:
         raise HTTPException(404, 'No media available for this episode')
+
+    _schedule_download(episode_id)
 
     # YouTube: resolve stream URL and proxy (required for range-request seeking)
     # no_cache=True forces re-resolution (used by client on retry after stream failure)
@@ -412,7 +601,12 @@ async def stream_episode(episode_id: int, request: Request, video: Optional[bool
     if range_header:
         upstream_headers['Range'] = range_header
 
-    client = httpx.AsyncClient(follow_redirects=True, timeout=None)
+    # No read timeout — legitimate streams can idle between chunks — but a connect
+    # timeout so a dead/unreachable upstream fails fast instead of hanging forever.
+    client = httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=httpx.Timeout(connect=15.0, read=None, write=None, pool=15.0),
+    )
     try:
         upstream = await client.send(
             httpx.Request('GET', stream_url, headers=upstream_headers),

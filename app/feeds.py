@@ -57,14 +57,15 @@ def _resolve_rss(url: str) -> tuple[str, str]:
     return url, name
 
 
-def fetch_feed_episodes(feed_id: int, url: str, feed_type: str) -> int:
-    """Fetch and save new episodes. Returns count of new episodes saved."""
+def fetch_feed_episodes(feed_id: int, url: str, feed_type: str) -> tuple[int, list[int]]:
+    """Fetch and save new episodes. Returns (count of new episodes, their ids)."""
     if feed_type == 'youtube':
         episodes = _parse_youtube_feed(feed_id, url)
     else:
         episodes = _parse_rss_feed(feed_id, url)
 
     saved = 0
+    new_ids = []
     with get_db() as db:
         for idx, ep in enumerate(episodes):
             try:
@@ -77,7 +78,10 @@ def fetch_feed_episodes(feed_id: int, url: str, feed_type: str) -> int:
                                datetime('now', :offset))''',
                     {**ep, 'offset': f'-{idx} seconds'},
                 )
-                saved += db.execute('SELECT changes()').fetchone()[0]
+                changed = db.execute('SELECT changes()').fetchone()[0]
+                saved += changed
+                if changed:
+                    new_ids.append(db.execute('SELECT last_insert_rowid()').fetchone()[0])
                 # Backfill published_at on existing rows that were stored without a date
                 if ep.get('published_at'):
                     db.execute(
@@ -88,7 +92,7 @@ def fetch_feed_episodes(feed_id: int, url: str, feed_type: str) -> int:
             except Exception as e:
                 logger.warning(f'Error saving episode: {e}')
         db.execute("UPDATE feeds SET last_checked = datetime('now') WHERE id = ?", (feed_id,))
-    return saved
+    return saved, new_ids
 
 
 def _parse_rss_feed(feed_id: int, url: str) -> list[dict]:

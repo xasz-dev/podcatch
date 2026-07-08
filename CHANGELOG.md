@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.13 — 2026-07-08
+
+### New features
+- Downloaded episodes now cache locally on first play, so replays are faster and immune to the original source going away (e.g. a YouTube video or RSS media URL disappearing); a bad cached copy auto-invalidates and re-downloads if playback fails
+- Add a per-feed "auto-download new episodes" toggle (feed context menu, default off) — new episodes on that feed download automatically instead of waiting for you to press play
+- Add a cleanup job that clears downloaded files for episodes marked as listened, after a configurable number of days (Settings dialog, default 7); downloaded episodes you never finish or mark as listened are also cleared after 30 days regardless
+- Add a "Continue Listening" view showing in-progress episodes across all feeds, most-recently-played first
+- Add a search box to the episode list for filtering by title within the current feed
+- Add a small indicator on the transfer button when another device is currently playing
+
+### Security fixes
+- Fix a stored XSS vector: episode links from feed data were rendered as clickable `<a>` hrefs without checking the URL scheme, so a `javascript:` link in a feed could execute on click — now only http(s) links render as clickable
+- Reject feed URLs that don't start with `http://` or `https://`, since `feedparser` will otherwise treat a bare path as a local file to parse
+
+### Improvements
+- Add a connect timeout to the stream proxy so a dead/unreachable upstream fails fast instead of hanging the request indefinitely
+
+## 0.2.12 — 2026-07-08
+
+### Improvements
+- Replace the hard `window.location.reload()` on session expiry with an in-place recovery dialog — log in again in a new tab, click Retry, and the app resumes without losing playback position or scroll state
+- Network requests now retry twice with backoff before failing, so transient blips no longer surface as errors
+- Public access migrated from Cloudflare Tunnel to a self-hosted Pangolin instance; auth is now a PIN gate instead of Cloudflare Access email OTP
+
 ## 0.2.11 — 2026-07-02
 
 ### Bug fixes

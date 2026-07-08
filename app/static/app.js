@@ -34,6 +34,7 @@ const state = {
   episodes: [],
   currentFeedId: 'all',
   sort: 'newest',
+  episodeQuery: '',
   playing: null,        // { episode, preferVideo }
   offset: 0,
   hasMore: true,
@@ -49,13 +50,14 @@ const state = {
 const PAGE_SIZE = 50;
 
 // ── API helpers ────────────────────────────────────────────────────────────────
-let _sessionExpiredToastShown = false;
+let _sessionExpiredShown = false;
+let _lastNetworkErrorToast = 0;
+const NETWORK_RETRY_DELAYS = [1000, 2000]; // two retries after the initial attempt
 
 function _handleSessionExpired() {
-  if (_sessionExpiredToastShown) return;
-  _sessionExpiredToastShown = true;
-  showToast('Session expired — reloading…', 'error');
-  setTimeout(() => window.location.reload(), 1500);
+  if (_sessionExpiredShown) return;
+  _sessionExpiredShown = true;
+  $('dialog-session-expired').showModal();
 }
 
 async function api(method, path, body) {
@@ -64,19 +66,30 @@ async function api(method, path, body) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
+
   let res;
-  try {
-    res = await fetch(path, opts);
-  } catch (_) {
-    // Genuine network failure (offline, etc.)
-    if (!_sessionExpiredToastShown) {
-      _sessionExpiredToastShown = true;
-      showToast('Connection lost — reload the page to reconnect.', 'error');
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(path, opts);
+      break;
+    } catch (_) {
+      // Genuine network failure (offline, DNS, connection refused, etc.) —
+      // retry a couple times with backoff before surfacing it, since most of
+      // these are transient blips rather than a real outage.
+      if (attempt < NETWORK_RETRY_DELAYS.length) {
+        await new Promise(r => setTimeout(r, NETWORK_RETRY_DELAYS[attempt]));
+        continue;
+      }
+      const now = Date.now();
+      if (now - _lastNetworkErrorToast > 30000) {
+        _lastNetworkErrorToast = now;
+        showToast('Connection lost — retrying in the background.', 'error');
+      }
+      throw new Error('Network error');
     }
-    throw new Error('Network error');
   }
-  // An opaque redirect means a proxy (e.g. Cloudflare Access) intercepted the
-  // request and redirected to a login page — browser cookie was lost overnight.
+  // An opaque redirect means the auth gate (Pangolin) intercepted the request
+  // and redirected to its login page — the session cookie expired.
   if (res.type === 'opaqueredirect') {
     _handleSessionExpired();
     throw new Error('Session expired');
@@ -99,13 +112,19 @@ const API = {
     markAllRead: (id) => api('POST', `/api/feeds/${id}/mark-all-read`),
   },
   episodes: {
-    list: (feedId, offset, sort) => {
+    list: (feedId, offset, sort, q) => {
       const params = new URLSearchParams({ limit: PAGE_SIZE, offset, sort });
       if (feedId !== 'all') params.set('feed_id', feedId);
+      if (q) params.set('q', q);
       return api('GET', `/api/episodes?${params}`);
     },
+    continueListening: () => api('GET', '/api/episodes/continue'),
     get: (id) => api('GET', `/api/episodes/${id}`),
     update: (id, data) => api('PATCH', `/api/episodes/${id}`, data),
+  },
+  settings: {
+    get: () => api('GET', '/api/settings'),
+    update: (data) => api('PATCH', '/api/settings', data),
   },
 };
 
@@ -152,6 +171,8 @@ function renderFeeds() {
   allBadge.textContent = totalUnread || '';
   document.querySelector('.nav-item[data-feed-id="all"]').className =
     'nav-item' + (state.currentFeedId === 'all' ? ' active' : '');
+  document.querySelector('.nav-item[data-feed-id="continue"]').className =
+    'nav-item' + (state.currentFeedId === 'continue' ? ' active' : '');
 }
 
 function feedIcon(type) {
@@ -173,8 +194,13 @@ async function loadEpisodes(replace = false) {
   if (state.loading && !replace) return;
   state.loading = true;
   const seq = ++state.loadSeq;
+  const isContinue = state.currentFeedId === 'continue';
+  $('sort-select').style.visibility = isContinue ? 'hidden' : '';
+  $('input-episode-search').style.visibility = isContinue ? 'hidden' : '';
   try {
-    const batch = await API.episodes.list(state.currentFeedId, state.offset, state.sort);
+    const batch = isContinue
+      ? await API.episodes.continueListening()
+      : await API.episodes.list(state.currentFeedId, state.offset, state.sort, state.episodeQuery);
     if (seq !== state.loadSeq) return; // superseded by a newer load
     if (replace) {
       state.episodes = batch;
@@ -182,7 +208,7 @@ async function loadEpisodes(replace = false) {
       state.episodes = state.episodes.concat(batch);
     }
     state.offset = state.episodes.length;
-    state.hasMore = batch.length === PAGE_SIZE;
+    state.hasMore = isContinue ? false : batch.length === PAGE_SIZE;
     renderEpisodes(replace);
 
     // Pre-warm stream URLs for the first few YouTube episodes in the batch
@@ -255,6 +281,8 @@ function buildEpisodeEl(ep) {
     ? `<img class="ep-thumb" src="${esc(ep.thumbnail_url)}" loading="lazy" alt="">`
     : `<div class="ep-thumb"></div>`;
 
+  const progressPct = ep.duration > 0 ? Math.min(100, (ep.playback_position / ep.duration) * 100) : 0;
+
   div.innerHTML = `
     ${thumb}
     <div class="ep-body">
@@ -265,6 +293,7 @@ function buildEpisodeEl(ep) {
         ${ep.duration ? `<span>${formatDuration(ep.duration)}</span>` : ''}
         ${ep.has_video ? '<span>video</span>' : ''}
       </div>
+      ${progressPct > 0 ? `<div class="ep-progress"><div class="ep-progress-bar" style="width:${progressPct}%"></div></div>` : ''}
     </div>
     <div class="ep-actions">
       <button class="small-btn btn-play-audio" title="Play audio">♫</button>
@@ -739,6 +768,14 @@ feedMenu.addEventListener('click', async (e) => {
       await API.feeds.update(id, { prefer_video: !feed.prefer_video });
       await loadFeeds();
     }
+  } else if (action === 'toggle-auto-download') {
+    const feed = state.feeds.find(f => f.id === id);
+    if (feed) {
+      const newVal = !feed.auto_download;
+      await API.feeds.update(id, { auto_download: newVal });
+      showToast(`Auto-download ${newVal ? 'enabled' : 'disabled'} for ${feed.name}`, 'info');
+      await loadFeeds();
+    }
   } else if (action === 'delete') {
     if (!confirm('Remove this feed and all its episodes?')) return;
     await API.feeds.delete(id);
@@ -777,6 +814,19 @@ $('sort-select').addEventListener('change', (e) => {
   loadEpisodes(true);
 });
 
+// ── Episode search ─────────────────────────────────────────────────────────────
+let _episodeSearchDebounce = null;
+$('input-episode-search').addEventListener('input', (e) => {
+  clearTimeout(_episodeSearchDebounce);
+  const value = e.target.value.trim();
+  _episodeSearchDebounce = setTimeout(() => {
+    state.episodeQuery = value;
+    state.offset = 0;
+    state.episodes = [];
+    loadEpisodes(true);
+  }, 300);
+});
+
 // ── Load more ──────────────────────────────────────────────────────────────────
 $('btn-load-more').addEventListener('click', () => loadEpisodes(false));
 
@@ -786,10 +836,18 @@ document.querySelector('.nav-item[data-feed-id="all"]').addEventListener('click'
   selectFeed('all');
 });
 
+// ── "Continue Listening" nav item ──────────────────────────────────────────────
+document.querySelector('.nav-item[data-feed-id="continue"]').addEventListener('click', () => {
+  closeMobileSidebar();
+  selectFeed('continue');
+});
+
 // ── Utilities ──────────────────────────────────────────────────────────────────
 function setPlayerTitle(title, pageUrl) {
   const el = $('player-title');
-  if (pageUrl) {
+  // Only render as a link for http(s) URLs — feed-supplied links are untrusted,
+  // and esc() alone doesn't stop a javascript: URI from executing on click.
+  if (pageUrl && /^https?:\/\//i.test(pageUrl)) {
     el.innerHTML = `<a href="${esc(pageUrl)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>`;
   } else {
     el.textContent = title;
@@ -1052,6 +1110,61 @@ $('form-rename-feed').addEventListener('submit', async (e) => {
   await loadFeeds();
 });
 
+// ── Settings dialog ────────────────────────────────────────────────────────────
+const settingsDialog = $('dialog-settings');
+
+$('btn-settings').addEventListener('click', async () => {
+  $('settings-error').classList.add('hidden');
+  try {
+    const settings = await API.settings.get();
+    $('input-cleanup-days').value = settings.cleanup_days;
+    settingsDialog.showModal();
+  } catch (e) {
+    showToast(e.message, 'error');
+  }
+});
+
+$('btn-cancel-settings').addEventListener('click', () => settingsDialog.close());
+
+$('btn-save-settings').addEventListener('click', async () => {
+  const errEl = $('settings-error');
+  errEl.classList.add('hidden');
+  const days = parseInt($('input-cleanup-days').value, 10);
+  if (!days || days < 1) {
+    errEl.textContent = 'Enter a number of days (1 or more).';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  try {
+    await API.settings.update({ cleanup_days: days });
+    settingsDialog.close();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+});
+
+// ── Session expired recovery ────────────────────────────────────────────────────
+const sessionExpiredDialog = $('dialog-session-expired');
+
+$('btn-session-login').addEventListener('click', () => {
+  window.open(window.location.href, '_blank');
+});
+
+$('btn-session-retry').addEventListener('click', async () => {
+  $('session-retry-error').classList.add('hidden');
+  try {
+    await api('GET', '/api/version');
+    sessionExpiredDialog.close();
+    _sessionExpiredShown = false;
+    connectSSE();
+    await loadFeeds();
+    await loadEpisodes(true);
+  } catch (_) {
+    $('session-retry-error').classList.remove('hidden');
+  }
+});
+
 // ── Mobile sidebar toggle ───────────────────────────────────────────────────────
 $('btn-menu-toggle').addEventListener('click', () => {
   $('sidebar').classList.toggle('mobile-open');
@@ -1082,6 +1195,12 @@ function connectSSE(failCount = 0) {
     if (event.type === 'connected' || event.type === 'devices_changed') {
       const devices = await api('GET', '/api/devices');
       state.otherDevices = devices.filter(d => d.id !== DEVICE_ID);
+      // Drop remoteState for devices that are no longer connected, so a stale
+      // "playing" doesn't linger in the ambient indicator after they vanish.
+      const onlineIds = new Set(state.otherDevices.map(d => d.id));
+      for (const did of Object.keys(state.remoteState)) {
+        if (!onlineIds.has(did)) delete state.remoteState[did];
+      }
       // If the device we're controlling just disconnected, exit remote mode
       if (state.remote && !state.otherDevices.find(d => d.id === state.remote.deviceId)) {
         const remoteName = state.remote.deviceName;
@@ -1147,6 +1266,7 @@ function connectSSE(failCount = 0) {
         deviceName: event.device_name,
         episode: episodeChanged ? null : existing.episode,
       };
+      updateTransferButton();
       if (episodeChanged && event.episode_id) {
         API.episodes.get(event.episode_id).then(ep => {
           if (state.remoteState[event.device_id]) {
@@ -1184,7 +1304,8 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('online', () => connectSSE());
 
 function updateTransferButton() {
-  // Button is always visible in the header; nothing to toggle.
+  const anyoneElsePlaying = Object.values(state.remoteState).some(rs => rs.playing);
+  $('btn-transfer').classList.toggle('has-active-playback', anyoneElsePlaying);
 }
 
 const devicePopup = $('device-popup');

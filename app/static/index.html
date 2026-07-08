@@ -7,7 +7,7 @@
   <title>podcatch</title>
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎧</text></svg>">
-  <link rel="stylesheet" href="/style.css?v=0.2.11">
+  <link rel="stylesheet" href="/style.css?v=0.2.13">
 </head>
 <body>
   <div id="app">
@@ -18,12 +18,17 @@
       <div class="header-actions">
         <button id="btn-transfer" class="icon-btn" title="Transfer / Remote">⇄</button>
         <button id="btn-refresh-all" class="icon-btn" title="Refresh all feeds">↻</button>
+        <button id="btn-settings" class="icon-btn" title="Settings">⚙</button>
         <button id="btn-add-feed" class="icon-btn primary" title="Add feed">+</button>
       </div>
     </header>
 
     <div id="layout">
       <nav id="sidebar">
+        <div class="nav-item" data-feed-id="continue">
+          <span class="feed-icon">▶</span>
+          <span class="feed-name">Continue Listening</span>
+        </div>
         <div class="nav-item" data-feed-id="all">
           <span class="feed-icon">◉</span>
           <span class="feed-name">All Episodes</span>
@@ -35,6 +40,7 @@
 
       <main id="episode-list">
         <div id="episode-list-header">
+          <input type="search" id="input-episode-search" placeholder="Search episodes…" autocomplete="off">
           <select id="sort-select">
             <option value="newest">Newest first</option>
             <option value="oldest">Oldest first</option>
@@ -164,6 +170,32 @@
     </form>
   </dialog>
 
+  <!-- Settings dialog -->
+  <dialog id="dialog-settings">
+    <h2>Settings</h2>
+    <label>
+      Clear downloaded episodes after
+      <input type="number" id="input-cleanup-days" min="1" step="1"> days of being marked as listened
+    </label>
+    <p class="setting-note">Downloaded episodes you never finish or mark as listened are also cleared after 30 days regardless.</p>
+    <div id="settings-error" class="error-msg hidden"></div>
+    <div class="dialog-actions">
+      <button type="button" id="btn-cancel-settings">Cancel</button>
+      <button type="button" id="btn-save-settings" class="primary">Save</button>
+    </div>
+  </dialog>
+
+  <!-- Session expired dialog -->
+  <dialog id="dialog-session-expired">
+    <h2>Session Expired</h2>
+    <p>Your login session has expired. Log in again in the tab that opens, then come back and click Retry — playback won't be interrupted.</p>
+    <div id="session-retry-error" class="error-msg hidden">Still not logged in — try the login link again.</div>
+    <div class="dialog-actions">
+      <button type="button" id="btn-session-login" class="primary">Log In Again</button>
+      <button type="button" id="btn-session-retry">Retry</button>
+    </div>
+  </dialog>
+
   <!-- Device transfer popup -->
   <div id="device-popup" class="context-menu hidden"></div>
 
@@ -173,11 +205,12 @@
     <button data-action="mark-all-read">Mark all as read</button>
     <button data-action="rename">Rename</button>
     <button data-action="toggle-video">Toggle video preference</button>
+    <button data-action="toggle-auto-download">Toggle auto-download</button>
     <button data-action="delete" class="danger">Remove feed</button>
   </div>
 
   <div id="toast-container"></div>
 
-  <script src="/app.js?v=0.2.11"></script>
+  <script src="/app.js?v=0.2.13"></script>
 </body>
 </html>
