@@ -132,6 +132,14 @@ const API = {
 const $ = (id) => document.getElementById(id);
 const media = $('media');
 
+// Keeps --player-h in sync with the player's real rendered height (0 when
+// hidden, taller on the stacked mobile layout, taller again with video open)
+// so the sidebar and episode list reserve exactly enough room to never end
+// up hidden behind the fixed player bar.
+new ResizeObserver(([entry]) => {
+  document.documentElement.style.setProperty('--player-h', `${Math.round(entry.contentRect.height)}px`);
+}).observe($('player'));
+
 // ── Icon helpers ───────────────────────────────────────────────────────────────
 const ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
 const ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
@@ -356,7 +364,10 @@ function buildEpisodeEl(ep) {
     ? `<img class="ep-thumb" src="${esc(ep.thumbnail_url)}" loading="lazy" alt="">`
     : `<div class="ep-thumb"></div>`;
 
-  const progressPct = ep.duration > 0 ? Math.min(100, (ep.playback_position / ep.duration) * 100) : 0;
+  // A read episode's progress isn't useful information any more — hide the
+  // meter for it the same as "never started", rather than showing whatever
+  // position happened to be on record (often a stale full bar).
+  const progressPct = (!ep.is_read && ep.duration > 0) ? Math.min(100, (ep.playback_position / ep.duration) * 100) : 0;
 
   div.innerHTML = `
     ${thumb}
@@ -401,13 +412,17 @@ async function toggleRead(ep) {
 
   const el = document.querySelector(`[data-ep-id="${ep.id}"]`);
   if (el) {
-    el.classList.toggle('read', newVal && !isActivelyPlaying);
+    el.classList.toggle('read', newVal);
     const btn = el.querySelector('.btn-mark-read');
     if (btn) {
       btn.classList.toggle('active', !newVal);
       btn.title = newVal ? 'Mark unread' : 'Mark played';
       btn.innerHTML = markReadIconSvg(newVal);
     }
+    // A read episode's progress is no longer useful info — hide the meter
+    // the same way "no progress yet" does, rather than showing a stale or
+    // suddenly-empty bar. Unmarking restores whatever position is on record.
+    updateRowProgress(ep.id, newVal ? 0 : (ep.duration > 0 ? Math.min(100, (ep.playback_position / ep.duration) * 100) : 0));
   }
   adjustFeedUnread(ep.feed_id, newVal ? -1 : 1);
   loadFeeds();
@@ -767,6 +782,7 @@ media.addEventListener('ended', () => {
         markBtn.title = 'Mark unread';
         markBtn.innerHTML = markReadIconSvg(true);
       }
+      updateRowProgress(ep.id, 0);
     }
   }
   clearInterval(positionInterval);
@@ -819,12 +835,20 @@ $('btn-seek-fwd').addEventListener('click', () => {
 // episode played/unplayed via toggleRead(), which also ends playback now when
 // marking (not unmarking) the episode that's currently loaded.
 function endPlaybackNow() {
+  // Mirrors the media 'ended' handler: marking the loaded episode played is
+  // meant to behave exactly like actually reaching the end, so state.playing
+  // has to be cleared here too — leaving it set was what caused the row to
+  // stay un-dimmed and, on the next SSE-triggered refresh, its progress meter
+  // to disappear instead of updating (both read off the stale isPlaying flag).
   _switchingEpisode = true; // suppress the pause handler's own position autosave
   media.pause();
-  if (media.duration) {
-    $('time-current').textContent = formatDuration(Math.floor(media.duration));
-    $('seek-bar').value = 100;
-  }
+  clearInterval(positionInterval);
+  state.playing = null;
+  $('player').classList.add('hidden');
+  setVideoMode(false);
+  document.querySelectorAll('.episode-item').forEach(el => el.classList.remove('playing', 'loading'));
+  broadcastState();
+  prependNewEpisodes();
   setTimeout(() => { _switchingEpisode = false; }, 50);
 }
 

@@ -68,7 +68,10 @@ header{
 }
 #btn-menu-toggle{display:none}
 
-#layout { display: flex; flex: 1; min-height: 0; }
+/* Reserves room for the fixed player bar so scrollable content (sidebar,
+   episode list, "load more") never ends up hidden behind it — --player-h is
+   kept in sync with the player's real rendered height by a ResizeObserver. */
+#layout { display: flex; flex: 1; min-height: 0; padding-bottom: var(--player-h); }
 
 /* ── Sidebar ───────────────────────────────────────────────────────────────── */
 #sidebar{
@@ -184,7 +187,10 @@ header{
 }
 #player.show-video #player-resize-handle{display:block}
 
-#player-bar{display:flex;align-items:center;gap:16px;padding:0 18px;height:var(--player-h)}
+/* Fixed 84px, not var(--player-h) — that variable is fed BY this element's
+   measured height (see the ResizeObserver in app.js) for sizing everything
+   else around the player, so using it here too would be circular. */
+#player-bar{display:flex;align-items:center;gap:16px;padding:0 18px;height:84px}
 
 #player-info{display:flex;align-items:center;gap:11px;flex:0 0 220px;min-width:0}
 #player-thumb{width:46px;height:46px;border-radius:7px;object-fit:cover;flex-shrink:0;background:var(--panel-2)}
@@ -350,7 +356,7 @@ label input:focus{border-color:var(--cyan-dim)}
   .mobile-only{display:flex}
   #search-wrap{display:none}
 
-  #sidebar{position:fixed;top:var(--header-h);left:0;bottom:0;width:84%;max-width:320px;
+  #sidebar{position:fixed;top:var(--header-h);left:0;bottom:var(--player-h);width:84%;max-width:320px;
     transform:translateX(-100%);transition:transform .2s ease;z-index:40;box-shadow:2px 0 24px rgba(0,0,0,.5)}
   #sidebar.mobile-open{transform:translateX(0)}
   #sidebar-search{display:block}
