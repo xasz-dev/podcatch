@@ -338,9 +338,62 @@ async function toggleRead(ep) {
 
 // ── Player ─────────────────────────────────────────────────────────────────────
 let positionInterval = null;
-let _mediaRetrying = false;
+// True while a media.src reassignment is in flight (episode switch or error
+// recovery). The reassignment fires a synthetic `pause` as a macrotask, whose
+// currentTime is meaningless — this suppresses the position save it would do.
 let _switchingEpisode = false;
 let _pendingSeekListener = null;
+
+// ── Media error recovery ───────────────────────────────────────────────────────
+// A retry counts as successful only once playback has advanced RECOVERY_CONFIRM_S
+// past the point it resumed from. Clearing the retry guard on the first `playing`
+// event instead meant a decode error that killed playback half a second in
+// rearmed the retry every time, looping forever on the same frame.
+const RECOVERY_CONFIRM_S = 5;
+// Seconds to jump past a frame the decoder rejects, widening per attempt. Retrying
+// at the same offset just re-reads the same bad frame; stepping over it is what
+// actually recovers (it's what skipping forward by hand does).
+const RECOVERY_SKIPS = [2, 5, 10];
+const RECOVERY_WINDOW_MS = 60000;
+const RECOVERY_MAX = 3;
+
+let _recovery = null;     // { resumeFrom, attempt } while a retry is unconfirmed
+let _retryTimes = [];     // recent retry timestamps, for the rolling cap
+let _lastPlayedTime = 0;  // last position seen by timeupdate; survives a src swap
+
+function resetRecovery() {
+  _recovery = null;
+  _retryTimes = [];
+  _lastPlayedTime = 0;
+}
+
+// Rolling cap so a stream that fails in a way skipping can't fix surfaces an
+// error instead of retrying forever.
+function retryBudgetOk() {
+  const now = Date.now();
+  _retryTimes = _retryTimes.filter(t => now - t < RECOVERY_WINDOW_MS);
+  if (_retryTimes.length >= RECOVERY_MAX) return false;
+  _retryTimes.push(now);
+  return true;
+}
+
+// Reload the stream and resume at `position`. Seeks after metadata rather than
+// racing play() against a mid-stream seek.
+function loadAndResume(src, position) {
+  clearPendingSeek();
+  _switchingEpisode = true;
+  media.src = src;
+  if (position > 5) {
+    _pendingSeekListener = () => {
+      _pendingSeekListener = null;
+      media.currentTime = position;
+      media.play().catch(() => {});
+    };
+    media.addEventListener('loadedmetadata', _pendingSeekListener, { once: true });
+  } else {
+    media.play().catch(() => {});
+  }
+}
 
 function clearPendingSeek() {
   if (_pendingSeekListener) {
@@ -351,7 +404,7 @@ function clearPendingSeek() {
 
 async function playEpisode(ep, preferVideo, skipFetch = false) {
   if (state.remote) exitRemoteMode();
-  _mediaRetrying = false;
+  resetRecovery();
   clearPendingSeek();
 
   // Save the outgoing episode's position before state changes. The pause event
@@ -525,47 +578,55 @@ media.addEventListener('play', () => { $('btn-play-pause').textContent = '⋯'; 
 media.addEventListener('playing', () => {
   $('btn-play-pause').textContent = '⏸';
   _switchingEpisode = false;
-  _mediaRetrying = false;
   document.querySelectorAll('.episode-item.loading').forEach(el => el.classList.remove('loading'));
   broadcastState();
 });
 media.addEventListener('waiting', () => { $('btn-play-pause').textContent = '⋯'; });
 media.addEventListener('error', async () => {
+  const err = media.error;
+  console.warn(`podcatch: media error ${err?.code}`, err?.message || '');
   $('btn-play-pause').textContent = '▶';
   document.querySelectorAll('.episode-item.loading').forEach(el => el.classList.remove('loading'));
   if (!state.playing) return;
 
-  // Auto-retry once with cache bypass — handles stale YouTube stream URLs or
-  // updated RSS media_url after a feed refresh without requiring a page reload.
-  if (!_mediaRetrying) {
-    _mediaRetrying = true;
-    const ep = state.playing.episode;
-    const pv = state.playing.preferVideo;
-    $('btn-play-pause').textContent = '⋯';
-    clearPendingSeek();
-    media.src = `/api/stream/${ep.id}?video=${pv}&no_cache=1`;
-    if (ep.playback_position > 5) {
-      _pendingSeekListener = () => {
-        _pendingSeekListener = null;
-        media.currentTime = ep.playback_position;
-        media.play().catch(() => {});
-      };
-      media.addEventListener('loadedmetadata', _pendingSeekListener, { once: true });
-    } else {
-      media.play().catch(() => {});
-    }
-    return;
-  }
-  _mediaRetrying = false;
+  const ep = state.playing.episode;
+  const pv = state.playing.preferVideo;
+  // The stream bytes are intact but one frame won't decode — typically the splice
+  // where a podcast host stitched in an ad. Refetching lands on the same frame, so
+  // step over it instead, and leave the server's cached copy alone (no_cache would
+  // delete a perfectly good download and force a full re-fetch).
+  const decodeError = err?.code === (window.MediaError?.MEDIA_ERR_DECODE ?? 3);
+  const failedAt = _lastPlayedTime || ep.playback_position || 0;
+  const knownDuration = media.duration || ep.duration || 0;
 
-  let msg = `Couldn't load "${state.playing.episode.title}"`;
+  if (retryBudgetOk()) {
+    const attempt = _recovery ? _recovery.attempt + 1 : 0;
+    const skip = decodeError ? RECOVERY_SKIPS[Math.min(attempt, RECOVERY_SKIPS.length - 1)] : 0;
+    const resumeFrom = failedAt + skip;
+
+    // Skipping past the end isn't recovery — treat it as reaching the end instead.
+    if (!(knownDuration && resumeFrom >= knownDuration - 1)) {
+      _recovery = { resumeFrom, attempt };
+      ep.playback_position = Math.floor(resumeFrom);
+      $('btn-play-pause').textContent = '⋯';
+      // Bypass the server's cached copy only when the source itself looks wrong
+      // (a stale YouTube stream URL, or an RSS media_url changed by a refresh).
+      const bust = decodeError ? '' : '&no_cache=1';
+      loadAndResume(`/api/stream/${ep.id}?video=${pv}${bust}`, resumeFrom);
+      return;
+    }
+  }
+  // Out of retries, or the failure is past the end of the episode. Give up, and
+  // release the src-swap flag so a later pause saves position normally again.
+  _recovery = null;
+  _switchingEpisode = false;
+
+  let msg = `Couldn't load "${ep.title}"`;
   try {
-    const ep = state.playing.episode;
-    const pv = state.playing.preferVideo;
     const resp = await fetch(`/api/stream/${ep.id}?video=${pv}`, { redirect: 'manual' });
     if (!resp.ok) {
-      const err = await resp.json().catch(() => null);
-      if (err?.detail) msg = err.detail;
+      const body = await resp.json().catch(() => null);
+      if (body?.detail) msg = body.detail;
     }
   } catch (_) {}
   showToast(msg, 'error');
@@ -573,8 +634,10 @@ media.addEventListener('error', async () => {
 media.addEventListener('pause', () => {
   // Don't overwrite the loading indicator if we're switching tracks
   if ($('btn-play-pause').textContent !== '⋯') $('btn-play-pause').textContent = '▶';
-  // Skip save during track switch — the outgoing position was already saved in playEpisode
-  // and currentTime here would be the old episode's value, not the new one.
+  // Skip the save while a src swap is in flight. On a track switch the outgoing
+  // position was already saved in playEpisode; on an error retry currentTime is
+  // still the offset that just failed, and writing it back is what pinned the
+  // saved position to the bad frame and kept the retry looping on it.
   if (!_switchingEpisode && state.playing && media.currentTime > 0) {
     const pos = Math.floor(media.currentTime);
     API.episodes.update(state.playing.episode.id, { playback_position: pos });
@@ -583,6 +646,13 @@ media.addEventListener('pause', () => {
   broadcastState();
 });
 media.addEventListener('timeupdate', () => {
+  _lastPlayedTime = media.currentTime;
+  // Only sustained progress past the resume point counts as a recovered stream —
+  // half a second of playback before the same frame fails again does not.
+  if (_recovery && media.currentTime >= _recovery.resumeFrom + RECOVERY_CONFIRM_S) {
+    _recovery = null;
+    _retryTimes = [];
+  }
   if (!media.duration) return;
   const pct = (media.currentTime / media.duration) * 100;
   $('seek-bar').value = pct;

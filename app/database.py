@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     has_video INTEGER NOT NULL DEFAULT 0,
     downloaded_path TEXT,
     downloaded_at TEXT,
+    downloaded_video INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(feed_id, guid)
 );
@@ -73,6 +74,10 @@ def init_db():
         _ensure_column(db, 'episodes', 'last_played_at', 'TEXT')
         _ensure_column(db, 'episodes', 'downloaded_path', 'TEXT')
         _ensure_column(db, 'episodes', 'downloaded_at', 'TEXT')
+        # Which variant the cached file is. Only meaningful for YouTube episodes,
+        # where audio-only and video are different files; NULL on rows downloaded
+        # before this column existed, which are treated as "variant unknown".
+        _ensure_column(db, 'episodes', 'downloaded_video', 'INTEGER')
         for key, value in DEFAULT_SETTINGS.items():
             db.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', (key, value))
 

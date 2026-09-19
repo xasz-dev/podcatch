@@ -69,6 +69,10 @@ async def cleanup_downloads():
         rows = db.execute(
             '''SELECT id, downloaded_path FROM episodes
                WHERE downloaded_path IS NOT NULL
+                 -- Never delete under an in-progress playback: the reader's open
+                 -- fd survives, but clearing the row sends the next range request
+                 -- back to the origin, swapping the byte source mid-episode.
+                 AND (last_played_at IS NULL OR last_played_at <= datetime('now', '-1 day'))
                  AND (
                    (is_read = 1 AND read_at IS NOT NULL AND read_at <= datetime('now', ?))
                    OR (downloaded_at IS NOT NULL AND downloaded_at <= datetime('now', ?))

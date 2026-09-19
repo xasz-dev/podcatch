@@ -21,7 +21,7 @@ from scheduler import start_scheduler
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-__version__ = '0.2.13'
+__version__ = '0.2.14'
 
 # In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
 _devices: dict[str, dict] = {}
@@ -41,6 +41,37 @@ DOWNLOAD_DIR = os.environ.get('DOWNLOAD_DIR', '/data/downloads')
 # episode_ids currently mid-download, so a second trigger doesn't start a duplicate fetch
 _downloading: set[int] = set()
 
+# (episode_id, prefer_video) -> deadline, marking playbacks that began before a
+# local copy existed. The browser re-issues range requests against the same URL
+# for the whole episode; if a background download lands partway through, serving
+# the file swaps in a byte stream fetched separately — an ad-stitched MP3 need not
+# be byte-identical between fetches — and breaks the browser's range bookkeeping.
+# Refreshed on every request, so the pin lasts as long as playback is in flight.
+# A replay started within the TTL just streams from the origin again: slower, but
+# never wrong.
+_origin_pinned: dict[tuple, float] = {}
+_PIN_TTL = 300
+
+
+def _pin_origin(key: tuple):
+    """Mark this playback as committed to the origin, not the local copy."""
+    now = time.monotonic()
+    _origin_pinned[key] = now + _PIN_TTL
+    for k in [k for k, deadline in _origin_pinned.items() if deadline < now]:
+        del _origin_pinned[k]
+
+
+def _refresh_origin_pin(key: tuple):
+    """Extend an existing pin, never create one — a playback that started on the
+    local copy has no pin, and giving it one would swap it to the origin instead."""
+    if _origin_pinned_for(key):
+        _origin_pinned[key] = time.monotonic() + _PIN_TTL
+
+
+def _origin_pinned_for(key: tuple) -> bool:
+    deadline = _origin_pinned.get(key)
+    return deadline is not None and time.monotonic() < deadline
+
 
 def _extension_for(content_type: str, url: str) -> str:
     ct = (content_type or '').lower()
@@ -59,9 +90,13 @@ def _extension_for(content_type: str, url: str) -> str:
     return '.mp4' if 'video' in ct else '.mp3'
 
 
-async def _download_episode(episode_id: int):
+async def _download_episode(episode_id: int, prefer_video: bool | None = None):
     """Fetch an episode's media to local disk in the background. Best-effort —
-    failures just mean the next play falls back to the live source as before."""
+    failures just mean the next play falls back to the live source as before.
+
+    prefer_video selects which YouTube variant to fetch; None means the feed's
+    default. It's recorded on the row so a cached video file isn't later served
+    to an audio playback, or vice versa."""
     if episode_id in _downloading:
         return
     _downloading.add(episode_id)
@@ -76,12 +111,15 @@ async def _download_episode(episode_id: int):
         if not ep or ep['downloaded_path']:
             return
 
+        if prefer_video is None:
+            prefer_video = bool(ep['feed_prefer_video'])
+
         if ep['media_url'] and not ep['youtube_id']:
             stream_url, content_type = ep['media_url'], 'audio/mpeg'
         elif ep['youtube_id']:
             try:
                 stream_url, content_type = await asyncio.get_running_loop().run_in_executor(
-                    None, get_youtube_stream_url, ep['youtube_id'], bool(ep['feed_prefer_video'])
+                    None, get_youtube_stream_url, ep['youtube_id'], prefer_video
                 )
             except Exception as e:
                 logger.warning(f'Download: could not resolve stream for episode {episode_id}: {e}')
@@ -97,13 +135,17 @@ async def _download_episode(episode_id: int):
             follow_redirects=True,
             timeout=httpx.Timeout(connect=15.0, read=30.0, write=30.0, pool=15.0),
         )
+        # Disk writes go to a thread: this runs on the single uvicorn worker that is
+        # also proxying live playback and holding the SSE connections, and a
+        # synchronous write to the NAS's disk blocks all of them for its duration.
+        loop = asyncio.get_running_loop()
         try:
             async with client.stream('GET', stream_url, headers={'User-Agent': 'Mozilla/5.0'}) as resp:
                 resp.raise_for_status()
                 with open(tmp_path, 'wb') as f:
                     async for chunk in resp.aiter_bytes(65536):
-                        f.write(chunk)
-            os.replace(tmp_path, final_path)
+                        await loop.run_in_executor(None, f.write, chunk)
+            await loop.run_in_executor(None, os.replace, tmp_path, final_path)
         except Exception as e:
             logger.warning(f'Download failed for episode {episode_id}: {e}')
             if os.path.exists(tmp_path):
@@ -114,8 +156,9 @@ async def _download_episode(episode_id: int):
 
         with get_db() as db:
             db.execute(
-                "UPDATE episodes SET downloaded_path = ?, downloaded_at = datetime('now') WHERE id = ?",
-                (final_path, episode_id),
+                """UPDATE episodes SET downloaded_path = ?, downloaded_at = datetime('now'),
+                          downloaded_video = ? WHERE id = ?""",
+                (final_path, int(prefer_video), episode_id),
             )
         logger.info(f'Downloaded episode {episode_id} to {final_path}')
     except Exception as e:
@@ -124,8 +167,8 @@ async def _download_episode(episode_id: int):
         _downloading.discard(episode_id)
 
 
-def _schedule_download(episode_id: int):
-    task = asyncio.create_task(_download_episode(episode_id))
+def _schedule_download(episode_id: int, prefer_video: bool | None = None):
+    task = asyncio.create_task(_download_episode(episode_id, prefer_video))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -139,7 +182,8 @@ def _forget_download(episode_id: int, path: str):
         logger.warning(f'Could not remove stale download for episode {episode_id}: {e}')
     with get_db() as db:
         db.execute(
-            'UPDATE episodes SET downloaded_path = NULL, downloaded_at = NULL WHERE id = ?',
+            '''UPDATE episodes SET downloaded_path = NULL, downloaded_at = NULL,
+                      downloaded_video = NULL WHERE id = ?''',
             (episode_id,),
         )
 
@@ -529,6 +573,13 @@ class PlayerStateRequest(BaseModel):
 
 @app.post('/api/state')
 async def broadcast_player_state(req: PlayerStateRequest):
+    # Players report in every 10s while playing, which is a better liveness signal
+    # for the origin pin than stream requests alone: a client with a large buffer
+    # can go minutes between range requests, and letting the pin lapse mid-episode
+    # is exactly the source swap it exists to prevent.
+    if req.playing and req.episode_id is not None:
+        _refresh_origin_pin((req.episode_id, bool(req.prefer_video)))
+
     device_name = _devices.get(req.from_device_id, {}).get('name', '')
     await _broadcast({
         'type': 'player_state',
@@ -559,28 +610,44 @@ async def stream_episode(episode_id: int, request: Request, video: Optional[bool
     if not ep:
         raise HTTPException(404)
 
+    prefer_video = video if video is not None else bool(ep['feed_prefer_video'])
+    pin_key = (episode_id, prefer_video)
+
+    # no_cache means the client is retrying after a playback error, so treat the
+    # cached copy as suspect: drop it, and clear the pin since this starts a fresh
+    # playback rather than continuing one.
+    if no_cache:
+        _origin_pinned.pop(pin_key, None)
+        if ep['downloaded_path']:
+            _forget_download(episode_id, ep['downloaded_path'])
+
     # Serve the locally cached copy if we have one — faster replay, and immune to
     # the original source going away. Range requests (seeking) work natively via
-    # FileResponse. no_cache means the client is retrying after a playback error,
-    # so treat the cached copy as suspect: drop it and fall through to a fresh fetch.
-    if ep['downloaded_path']:
-        if no_cache:
-            _forget_download(episode_id, ep['downloaded_path'])
-        elif os.path.exists(ep['downloaded_path']):
+    # FileResponse. Skipped if this playback already started against the origin,
+    # or if the cached file is the wrong variant (YouTube audio vs video); a NULL
+    # downloaded_video predates that column, so its variant is unknown and only
+    # safe to serve for episodes that have just the one.
+    elif ep['downloaded_path'] and not _origin_pinned_for(pin_key):
+        variant_ok = not ep['youtube_id'] or (
+            ep['downloaded_video'] is not None and bool(ep['downloaded_video']) == prefer_video
+        )
+        if variant_ok and os.path.exists(ep['downloaded_path']):
             return FileResponse(ep['downloaded_path'])
 
-    prefer_video = video if video is not None else bool(ep['feed_prefer_video'])
+    # Everything below streams from the origin, so this playback is committed to it
+    # for as long as it keeps making requests.
+    _pin_origin(pin_key)
 
     # RSS/Substack: redirect directly to the CDN URL, and kick off a background
     # download so the next play can serve the local copy instead.
     if ep['media_url'] and not ep['youtube_id']:
-        _schedule_download(episode_id)
+        _schedule_download(episode_id, prefer_video)
         return RedirectResponse(ep['media_url'])
 
     if not ep['youtube_id']:
         raise HTTPException(404, 'No media available for this episode')
 
-    _schedule_download(episode_id)
+    _schedule_download(episode_id, prefer_video)
 
     # YouTube: resolve stream URL and proxy (required for range-request seeking)
     # no_cache=True forces re-resolution (used by client on retry after stream failure)
@@ -696,10 +763,13 @@ async def prewarm(episode_ids: list[int]):
         except Exception as e:
             logger.warning(f'Prewarm failed for episode {episode_id}: {e}')
 
-    task = asyncio.create_task(asyncio.gather(
+    # gather() schedules the coroutines itself and returns a future, not a
+    # coroutine — wrapping it in create_task() raised TypeError before any of them
+    # ran. Hold the future directly; it keeps them referenced just the same.
+    task = asyncio.gather(
         *[warm_one(eid) for eid in episode_ids[:5]],
         return_exceptions=True,
-    ))
+    )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return {'ok': True}

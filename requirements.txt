@@ -1,4 +1,8 @@
 fastapi>=0.104.0
+# FileResponse only answers Range requests with 206 from starlette 0.45 on.
+# Seeking and mid-playback range requests against a downloaded episode depend
+# on it, so an unpinned rebuild resolving older would break playback silently.
+starlette>=0.45
 uvicorn[standard]>=0.24.0
 feedparser>=6.0.10
 yt-dlp>=2024.1.1

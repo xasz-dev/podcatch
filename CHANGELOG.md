@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.14 — 2026-09-19
+
+### Bug fixes
+- Fix playback getting stuck in a loop that replayed the same half-second of audio, most often at the point a podcast host splices in an ad. A media error triggered a retry that reloaded the stream and seeked back to the saved position — the exact frame that had just failed — so it failed again immediately. Three things kept the loop alive, all now fixed: the "retry once" guard was cleared by the `playing` event, which the half-second of playback before each failure was enough to fire; the synthetic `pause` from reloading the stream wrote the failing offset back as the saved position, pinning it there; and the retry always resumed at that same offset instead of stepping past the bad frame
+- Retries now resume past the failure (2s, then 5s, then 10s) rather than landing on it, and give up with an error after 3 attempts in a minute instead of retrying indefinitely; a retry only counts as successful once playback has advanced 5s past where it resumed
+- Stop the retry sending `no_cache=1` for decode errors, which deleted the locally downloaded copy and forced a full re-download on every attempt — in the stall loop this fired several times a minute and meant the 0.2.13 download cache could never establish for an affected episode
+- Log the `MediaError` code to the console on playback failure. The failure this fixes is `PIPELINE_ERROR_DECODE` / `mpa: part2_3_length is not valid` — a malformed MP3 frame at the ad splice, which no decoder can play, so skipping past it is the only recovery
+- Fix the PWA manifest failing to load behind the auth proxy. Manifest requests are uncredentialed by default, so the proxy bounced them to a cross-origin login URL with no CORS headers and the browser blocked it; the link now requests it with credentials
+- Fix `/api/prewarm` raising `TypeError` on every call and resolving nothing — `asyncio.gather()` returns a future, not a coroutine, so wrapping it in `create_task()` failed before any of the work started. YouTube stream-URL prewarming has been dead since 0.2.2 and now actually runs
+
+### Improvements
+- Never switch an episode's byte source mid-playback. A background download completing partway through an episode used to divert the next range request to the local file — a separately fetched copy that need not be byte-identical — which breaks the browser's range bookkeeping. A playback that starts against the origin now stays there until it stops, and only a later play uses the cached copy
+- Record which variant a downloaded file is, so a cached YouTube video isn't served to an audio playback or vice versa; downloads also now follow the requested variant rather than always the feed default
+- Write downloads to disk off the event loop. They ran as synchronous writes on the single uvicorn worker that also proxies live playback and holds the SSE connections, stalling both for the duration of each write
+- Don't let the cleanup job delete a file out from under an episode played in the last 24 hours — the reader's open handle survives, but clearing the row sent the next range request back to the origin, swapping the byte source mid-episode
+- Pin `starlette>=0.45`, the first release whose `FileResponse` answers `Range` requests with `206`. Seeking within a downloaded episode depends on it, and an unpinned rebuild resolving older would have broken playback silently
+
 ## 0.2.13 — 2026-07-08
 
 ### New features
