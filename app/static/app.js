@@ -132,6 +132,23 @@ const API = {
 const $ = (id) => document.getElementById(id);
 const media = $('media');
 
+// ── Icon helpers ───────────────────────────────────────────────────────────────
+const ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
+const ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
+const ICON_LOADING = '<circle cx="6" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18" cy="12" r="1.8"/>';
+
+let _playIconState = 'play'; // 'play' | 'pause' | 'loading' — mirrors what's currently drawn
+function setPlayPauseIcon(iconState) {
+  _playIconState = iconState;
+  $('icon-play-pause').innerHTML = iconState === 'loading' ? ICON_LOADING : iconState === 'pause' ? ICON_PAUSE : ICON_PLAY;
+}
+
+function markReadIconSvg(isRead) {
+  return isRead
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8" fill="currentColor" stroke="none"/></svg>';
+}
+
 // ── Feed list ──────────────────────────────────────────────────────────────────
 async function loadFeeds() {
   state.feeds = await API.feeds.list();
@@ -158,7 +175,7 @@ function renderFeeds() {
     div.dataset.feedId = feed.id;
     const refreshing = state.refreshingFeedId === feed.id;
     div.innerHTML = `
-      <span class="feed-icon${refreshing ? ' spinning' : ''}">${feedIcon(feed.feed_type)}</span>
+      ${feedIcon(feed.feed_type, refreshing)}
       <span class="feed-name">${esc(feed.name)}</span>
       <span class="unread-badge">${feed.unread_count || ''}</span>
     `;
@@ -173,10 +190,18 @@ function renderFeeds() {
     'nav-item' + (state.currentFeedId === 'all' ? ' active' : '');
   document.querySelector('.nav-item[data-feed-id="continue"]').className =
     'nav-item' + (state.currentFeedId === 'continue' ? ' active' : '');
+  // Decorative fill on the "All Episodes" ring — scales with how much is unread,
+  // capped at 100%; not tied to a precise denominator, just a glanceable signal.
+  $('all-reel-icon').style.setProperty('--fill', Math.min(100, totalUnread * 12));
 }
 
-function feedIcon(type) {
-  return type === 'youtube' ? '▶' : type === 'substack' ? 'S' : '◎';
+function feedIcon(type, spinning) {
+  const cls = 'feed-icon' + (spinning ? ' spinning' : '');
+  const inner = {
+    youtube: '<rect x="2" y="6" width="20" height="12" rx="3"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor" stroke="none"/>',
+    substack: '<path d="M4 5h16M4 10h16M4 15l8 6 8-6"/>',
+  }[type] || '<path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1.5" fill="currentColor" stroke="none"/>';
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
 }
 
 async function selectFeed(feedId) {
@@ -197,6 +222,7 @@ async function loadEpisodes(replace = false) {
   const isContinue = state.currentFeedId === 'continue';
   $('sort-select').style.visibility = isContinue ? 'hidden' : '';
   $('input-episode-search').style.visibility = isContinue ? 'hidden' : '';
+  $('input-episode-search-mobile').style.visibility = isContinue ? 'hidden' : '';
   try {
     const batch = isContinue
       ? await API.episodes.continueListening()
@@ -224,7 +250,23 @@ async function loadEpisodes(replace = false) {
   }
 }
 
+function updateListHeader() {
+  const label = state.currentFeedId === 'continue' ? 'Continue Listening'
+    : state.currentFeedId === 'all' ? 'All Episodes'
+    : state.feeds.find(f => f.id === state.currentFeedId)?.name || '';
+  $('list-title').textContent = label;
+  if (state.currentFeedId === 'continue') {
+    $('list-sub').textContent = `${state.episodes.length} in progress`;
+  } else {
+    const unread = state.currentFeedId === 'all'
+      ? state.feeds.reduce((s, f) => s + (f.unread_count || 0), 0)
+      : (state.feeds.find(f => f.id === state.currentFeedId)?.unread_count || 0);
+    $('list-sub').textContent = `${unread} unread`;
+  }
+}
+
 function renderEpisodes(replace = true) {
+  updateListHeader();
   const container = $('episode-items');
   if (replace) container.innerHTML = '';
 
@@ -238,6 +280,33 @@ function renderEpisodes(replace = true) {
 
   $('btn-load-more').style.display = state.hasMore ? '' : 'none';
   $('load-more-wrap').style.display = state.hasMore ? '' : 'none';
+}
+
+// A read/unread change made on another device only broadcasts 'feeds_changed'
+// (sidebar counts) — the currently-visible rows stay stale otherwise, which is
+// what made episodes not show as played until a hard refresh. Patch read-state
+// into whatever's already loaded rather than a full reload, so scroll position
+// and pagination survive it.
+async function refreshEpisodeReadStates() {
+  if (!state.episodes.length) return;
+  let fresh;
+  try {
+    fresh = state.currentFeedId === 'continue'
+      ? await API.episodes.continueListening()
+      : await API.episodes.list(state.currentFeedId, 0, state.sort, state.episodeQuery);
+  } catch (_) { return; }
+
+  const byId = new Map(fresh.map(e => [e.id, e]));
+  let changed = false;
+  for (const ep of state.episodes) {
+    const upd = byId.get(ep.id);
+    if (upd && (upd.is_read !== ep.is_read || upd.playback_position !== ep.playback_position)) {
+      ep.is_read = upd.is_read;
+      ep.playback_position = upd.playback_position;
+      changed = true;
+    }
+  }
+  if (changed) renderEpisodes(true);
 }
 
 async function prependNewEpisodes() {
@@ -269,6 +338,12 @@ async function prependNewEpisodes() {
   container.insertBefore(fragment, container.firstChild);
 }
 
+function tapeMeter(pct) {
+  let cells = '';
+  for (let i = 0; i < 10; i++) cells += `<i class="${i < Math.round(pct / 10) ? 'filled' : ''}"></i>`;
+  return cells;
+}
+
 function buildEpisodeEl(ep) {
   const isPlaying = state.playing && state.playing.episode.id === ep.id;
   const div = document.createElement('div');
@@ -293,28 +368,16 @@ function buildEpisodeEl(ep) {
         ${ep.duration ? `<span>${formatDuration(ep.duration)}</span>` : ''}
         ${ep.has_video ? '<span>video</span>' : ''}
       </div>
-      ${progressPct > 0 ? `<div class="ep-progress"><div class="ep-progress-bar" style="width:${progressPct}%"></div></div>` : ''}
+      <div class="ep-progress" data-progress-for="${ep.id}"${progressPct > 0 ? '' : ' style="visibility:hidden"'}>${tapeMeter(progressPct)}</div>
     </div>
     <div class="ep-actions">
-      <button class="small-btn btn-play-audio" title="Play audio">♫</button>
-      ${ep.has_video || ep.youtube_id
-        ? `<button class="small-btn btn-play-video" title="Play video">▶</button>`
-        : ''}
-      <button class="small-btn btn-mark-read" title="${ep.is_read ? 'Mark unread' : 'Mark read'}">
-        ${ep.is_read ? '○' : '●'}
+      <button class="ep-btn btn-mark-read${ep.is_read ? '' : ' active'}" title="${ep.is_read ? 'Mark unread' : 'Mark played'}">
+        ${markReadIconSvg(ep.is_read)}
       </button>
     </div>
   `;
 
   div.querySelector('.ep-body').addEventListener('click', () => playEpisode(ep, ep.feed_prefer_video));
-  div.querySelector('.btn-play-audio')?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    playEpisode(ep, false);
-  });
-  div.querySelector('.btn-play-video')?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    playEpisode(ep, true);
-  });
   div.querySelector('.btn-mark-read')?.addEventListener('click', (e) => {
     e.stopPropagation();
     toggleRead(ep);
@@ -325,15 +388,32 @@ function buildEpisodeEl(ep) {
 
 async function toggleRead(ep) {
   const newVal = !ep.is_read;
-  await API.episodes.update(ep.id, { is_read: newVal });
+  const isActivelyPlaying = !!(state.playing && state.playing.episode.id === ep.id);
+  // Marking the actively-loaded episode as played doubles as "skip to the
+  // end" — handy for jumping past a trailing ad block without losing the
+  // played state — so it resets the resume position the same way the old
+  // "end & mark played" control did.
+  const body = { is_read: newVal };
+  if (newVal && isActivelyPlaying) body.playback_position = 0;
+  await API.episodes.update(ep.id, body);
   ep.is_read = newVal;
+  if (newVal && isActivelyPlaying) ep.playback_position = 0;
+
   const el = document.querySelector(`[data-ep-id="${ep.id}"]`);
   if (el) {
-    el.classList.toggle('read', newVal);
-    el.querySelector('.btn-mark-read').textContent = newVal ? '○' : '●';
+    el.classList.toggle('read', newVal && !isActivelyPlaying);
+    const btn = el.querySelector('.btn-mark-read');
+    if (btn) {
+      btn.classList.toggle('active', !newVal);
+      btn.title = newVal ? 'Mark unread' : 'Mark played';
+      btn.innerHTML = markReadIconSvg(newVal);
+    }
   }
   adjustFeedUnread(ep.feed_id, newVal ? -1 : 1);
   loadFeeds();
+
+  if (newVal && isActivelyPlaying) endPlaybackNow();
+  updateMarkPlayedButtons();
 }
 
 // ── Player ─────────────────────────────────────────────────────────────────────
@@ -427,9 +507,10 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
   setPlayerTitle(ep.title, ep.page_url);
   $('player-thumb').src = ep.thumbnail_url || '';
   $('player-thumb').style.display = ep.thumbnail_url ? '' : 'none';
-  $('btn-play-pause').textContent = '⋯';
+  setPlayPauseIcon('loading');
   setVideoMode(preferVideo && (ep.has_video || ep.youtube_id));
   updateTransferButton();
+  updateMarkPlayedButtons();
   document.querySelectorAll('.episode-item').forEach(el => el.classList.remove('playing', 'loading'));
   document.querySelector(`[data-ep-id="${ep.id}"]`)?.classList.add('playing', 'loading');
 
@@ -448,7 +529,7 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
   restoreSpeed();
 
   const handleAutoplayBlocked = err => {
-    if (err.name === 'NotAllowedError') $('btn-play-pause').textContent = '▶';
+    if (err.name === 'NotAllowedError') setPlayPauseIcon('play');
   };
 
   if (ep.playback_position > 5) {
@@ -464,15 +545,25 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
     media.play().catch(handleAutoplayBlocked);
   }
 
-  // Position saving
+  // Position saving — also nudges this episode's row in the list so its
+  // progress meter advances live instead of only updating after a reload.
   clearInterval(positionInterval);
   positionInterval = setInterval(() => {
     if (!media.paused && media.currentTime > 0) {
-      API.episodes.update(ep.id, { playback_position: Math.floor(media.currentTime) });
-      ep.playback_position = Math.floor(media.currentTime);
+      const pos = Math.floor(media.currentTime);
+      API.episodes.update(ep.id, { playback_position: pos });
+      ep.playback_position = pos;
       broadcastState();
+      if (media.duration) updateRowProgress(ep.id, Math.min(100, (pos / media.duration) * 100));
     }
   }, 10000);
+}
+
+function updateRowProgress(epId, pct) {
+  const meter = document.querySelector(`[data-progress-for="${epId}"]`);
+  if (!meter) return;
+  meter.innerHTML = tapeMeter(pct);
+  meter.style.visibility = pct > 0 ? '' : 'hidden';
 }
 
 // ── Media Session (lock-screen / hardware controls) ─────────────────────────────
@@ -574,18 +665,18 @@ applyVideoHeight(getVideoHeight());
 
 // Player event listeners
 media.addEventListener('click', () => { media.paused ? media.play() : media.pause(); });
-media.addEventListener('play', () => { $('btn-play-pause').textContent = '⋯'; });
+media.addEventListener('play', () => { setPlayPauseIcon('loading'); });
 media.addEventListener('playing', () => {
-  $('btn-play-pause').textContent = '⏸';
+  setPlayPauseIcon('pause');
   _switchingEpisode = false;
   document.querySelectorAll('.episode-item.loading').forEach(el => el.classList.remove('loading'));
   broadcastState();
 });
-media.addEventListener('waiting', () => { $('btn-play-pause').textContent = '⋯'; });
+media.addEventListener('waiting', () => { setPlayPauseIcon('loading'); });
 media.addEventListener('error', async () => {
   const err = media.error;
   console.warn(`podcatch: media error ${err?.code}`, err?.message || '');
-  $('btn-play-pause').textContent = '▶';
+  setPlayPauseIcon('play');
   document.querySelectorAll('.episode-item.loading').forEach(el => el.classList.remove('loading'));
   if (!state.playing) return;
 
@@ -608,7 +699,7 @@ media.addEventListener('error', async () => {
     if (!(knownDuration && resumeFrom >= knownDuration - 1)) {
       _recovery = { resumeFrom, attempt };
       ep.playback_position = Math.floor(resumeFrom);
-      $('btn-play-pause').textContent = '⋯';
+      setPlayPauseIcon('loading');
       // Bypass the server's cached copy only when the source itself looks wrong
       // (a stale YouTube stream URL, or an RSS media_url changed by a refresh).
       const bust = decodeError ? '' : '&no_cache=1';
@@ -633,7 +724,7 @@ media.addEventListener('error', async () => {
 });
 media.addEventListener('pause', () => {
   // Don't overwrite the loading indicator if we're switching tracks
-  if ($('btn-play-pause').textContent !== '⋯') $('btn-play-pause').textContent = '▶';
+  if (_playIconState !== 'loading') setPlayPauseIcon('play');
   // Skip the save while a src swap is in flight. On a track switch the outgoing
   // position was already saved in playEpisode; on an error retry currentTime is
   // still the offset that just failed, and writing it back is what pinned the
@@ -660,17 +751,22 @@ media.addEventListener('timeupdate', () => {
   $('time-total').textContent = formatDuration(Math.floor(media.duration));
 });
 media.addEventListener('ended', () => {
-  $('btn-play-pause').textContent = '▶';
+  setPlayPauseIcon('play');
   if (state.playing) {
     const ep = state.playing.episode;
     API.episodes.update(ep.id, { is_read: true, playback_position: 0 });
     if (!ep.is_read) adjustFeedUnread(ep.feed_id, -1);
     ep.is_read = true;
+    ep.playback_position = 0;
     const el = document.querySelector(`[data-ep-id="${ep.id}"]`);
     if (el) {
       el.classList.add('read');
       const markBtn = el.querySelector('.btn-mark-read');
-      if (markBtn) { markBtn.title = 'Mark unread'; markBtn.textContent = '○'; }
+      if (markBtn) {
+        markBtn.classList.remove('active');
+        markBtn.title = 'Mark unread';
+        markBtn.innerHTML = markReadIconSvg(true);
+      }
     }
   }
   clearInterval(positionInterval);
@@ -689,7 +785,7 @@ $('btn-play-pause').addEventListener('click', () => {
     // Optimistic update
     if (rs) {
       rs.playing = !rs.playing;
-      $('btn-play-pause').textContent = rs.playing ? '⏸' : '▶';
+      setPlayPauseIcon(rs.playing ? 'pause' : 'play');
       rs.playing ? startRemoteTicker() : stopRemoteTicker();
     }
     return;
@@ -717,21 +813,38 @@ $('btn-seek-fwd').addEventListener('click', () => {
   }
   media.currentTime += 30;
 });
-$('btn-end-played').addEventListener('click', () => {
-  if (!state.playing) return;
-  const ep = state.playing.episode;
+// ── Mark played (player) ─────────────────────────────────────────────────────
+// A single toggle, mirrored on desktop (inline with the progress bar) and on
+// mobile (in the transport row) — clicking either marks the actively-loaded
+// episode played/unplayed via toggleRead(), which also ends playback now when
+// marking (not unmarking) the episode that's currently loaded.
+function endPlaybackNow() {
+  _switchingEpisode = true; // suppress the pause handler's own position autosave
   media.pause();
-  API.episodes.update(ep.id, { is_read: true, playback_position: 0 });
-  if (!ep.is_read) adjustFeedUnread(ep.feed_id, -1);
-  ep.is_read = true;
-  const el = document.querySelector(`[data-ep-id="${ep.id}"]`);
-  if (el) {
-    el.classList.add('read');
-    const markBtn = el.querySelector('.btn-mark-read');
-    if (markBtn) { markBtn.title = 'Mark unread'; markBtn.textContent = '○'; }
+  if (media.duration) {
+    $('time-current').textContent = formatDuration(Math.floor(media.duration));
+    $('seek-bar').value = 100;
   }
-  loadFeeds();
-});
+  setTimeout(() => { _switchingEpisode = false; }, 50);
+}
+
+function updateMarkPlayedButtons() {
+  const ep = state.playing?.episode;
+  for (const id of ['btn-mark-played', 'btn-mark-played-mobile']) {
+    const btn = $(id);
+    if (!ep) { btn.classList.remove('active'); continue; }
+    btn.classList.toggle('active', !ep.is_read);
+    btn.title = ep.is_read ? 'Mark unplayed' : 'Mark played';
+    btn.innerHTML = markReadIconSvg(ep.is_read);
+  }
+}
+
+function markPlayedClick() {
+  if (!state.playing || state.remote) return;
+  toggleRead(state.playing.episode);
+}
+$('btn-mark-played').addEventListener('click', markPlayedClick);
+$('btn-mark-played-mobile').addEventListener('click', markPlayedClick);
 $('seek-bar').addEventListener('input', (e) => {
   if (state.remote) {
     const rs = state.remoteState[state.remote.deviceId];
@@ -884,18 +997,23 @@ $('sort-select').addEventListener('change', (e) => {
   loadEpisodes(true);
 });
 
-// ── Episode search ─────────────────────────────────────────────────────────────
+// ── Episode search (header box on desktop, sidebar drawer on mobile) ────────────
 let _episodeSearchDebounce = null;
-$('input-episode-search').addEventListener('input', (e) => {
+function onEpisodeSearchInput(e) {
   clearTimeout(_episodeSearchDebounce);
   const value = e.target.value.trim();
+  // Keep both boxes in sync so switching layout mid-search doesn't lose it
+  $('input-episode-search').value = e.target.value;
+  $('input-episode-search-mobile').value = e.target.value;
   _episodeSearchDebounce = setTimeout(() => {
     state.episodeQuery = value;
     state.offset = 0;
     state.episodes = [];
     loadEpisodes(true);
   }, 300);
-});
+}
+$('input-episode-search').addEventListener('input', onEpisodeSearchInput);
+$('input-episode-search-mobile').addEventListener('input', onEpisodeSearchInput);
 
 // ── Load more ──────────────────────────────────────────────────────────────────
 $('btn-load-more').addEventListener('click', () => loadEpisodes(false));
@@ -1238,10 +1356,13 @@ $('btn-session-retry').addEventListener('click', async () => {
 // ── Mobile sidebar toggle ───────────────────────────────────────────────────────
 $('btn-menu-toggle').addEventListener('click', () => {
   $('sidebar').classList.toggle('mobile-open');
+  $('sidebar-scrim').classList.toggle('open');
 });
+$('sidebar-scrim').addEventListener('click', closeMobileSidebar);
 
 function closeMobileSidebar() {
   $('sidebar').classList.remove('mobile-open');
+  $('sidebar-scrim').classList.remove('open');
 }
 
 // ── SSE / device presence ──────────────────────────────────────────────────────
@@ -1282,6 +1403,7 @@ function connectSSE(failCount = 0) {
 
     if (event.type === 'feeds_changed') {
       await loadFeeds();
+      await refreshEpisodeReadStates();
     }
 
     if (event.type === 'new_episodes') {
@@ -1494,7 +1616,7 @@ function updateRemotePlayerUI(rs) {
   setPlayerTitle(rs.episode?.title || `Playing on ${state.remote.deviceName}`, rs.episode?.page_url);
   $('player-thumb').src = rs.episode?.thumbnail_url || '';
   $('player-thumb').style.display = rs.episode?.thumbnail_url ? '' : 'none';
-  $('btn-play-pause').textContent = rs.playing ? '⏸' : '▶';
+  setPlayPauseIcon(rs.playing ? 'pause' : 'play');
   const spd = rs.speed || 1;
   speedBtn.textContent = spd === 1 ? '1×' : `${spd}×`;
   if (rs.duration && rs.position !== undefined) {
@@ -1512,6 +1634,7 @@ async function enterRemoteMode(deviceId, deviceName) {
   $('player').classList.add('remote-mode');
   $('remote-indicator').textContent = `Remote: ${deviceName}`;
   updateTransferButton();
+  updateMarkPlayedButtons();
 
   // Show what we already know while waiting for the state refresh
   const rs = state.remoteState[deviceId];
@@ -1520,7 +1643,7 @@ async function enterRemoteMode(deviceId, deviceName) {
     if (rs.playing) startRemoteTicker();
   } else {
     setPlayerTitle(`Connecting to ${deviceName}…`, null);
-    $('btn-play-pause').textContent = '⋯';
+    setPlayPauseIcon('loading');
   }
 
   // Ask the remote device to push its current state immediately
@@ -1539,7 +1662,7 @@ function exitRemoteMode() {
     setPlayerTitle(state.playing.episode.title, state.playing.episode.page_url);
     $('player-thumb').src = state.playing.episode.thumbnail_url || '';
     $('player-thumb').style.display = state.playing.episode.thumbnail_url ? '' : 'none';
-    $('btn-play-pause').textContent = media.paused ? '▶' : '⏸';
+    setPlayPauseIcon(media.paused ? 'play' : 'pause');
     const spd = media.playbackRate || 1;
     speedBtn.textContent = spd === 1 ? '1×' : `${spd}×`;
     if (isFinite(media.duration) && media.duration) {
@@ -1551,6 +1674,7 @@ function exitRemoteMode() {
     $('player').classList.add('hidden');
   }
   updateTransferButton();
+  updateMarkPlayedButtons();
 }
 
 async function reclaimFromRemote(deviceId) {

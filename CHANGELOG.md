@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 — 2026-09-19
+
+### Redesign
+- Full visual redesign: a cooler, dark color system (deep blue-black with a cyan/orange accent pair), IBM Plex Sans/Mono throughout, and a rebuilt icon set (feed types, transport controls, header actions) — replacing the old grey/blue palette and single-character glyph icons
+- Feed list: "All Episodes" gets a ring that fills with how much is unread instead of a plain badge; each feed keeps its type icon (RSS/YouTube/Substack) next to an unread count in the new accent color
+- Episode rows: the −10/−30/+30 skip buttons now show their seconds directly in the icon instead of being visually identical; the two-button "play audio / play video" row action is gone in favor of a single larger mark-played toggle that only appears on hover on desktop and stays visible on mobile (as a proper touch target, not a hover affordance)
+- Mobile: header actions (transfer, refresh, settings) no longer disappear at narrow widths; episode search moves into the sidebar drawer instead of vanishing; the player reflows into a Spotify-style stacked layout (art + title, then progress, then a five-button transport row including a mobile mark-played toggle) instead of the old cramped two-row wrap
+- The old "⏹ end & mark played" button is replaced by a proper mark-played/unplayed toggle, available inline on desktop and in the mobile transport row; marking the *currently playing* episode played now also jumps playback to the end immediately — handy for cutting off a trailing ad block without losing the played state
+
+### Bug fixes
+- Episode rows no longer go stale until a hard refresh: marking an episode read/unread on one device now updates the read state of that episode everywhere it's visible on other connected devices, not just the sidebar unread counts (the SSE `feeds_changed` event only ever refreshed feeds, never the episode list itself)
+- An episode's progress meter now advances during playback instead of only reflecting whatever it was when the list last loaded
+
 ## 0.2.14 — 2026-09-19
 
 ### Bug fixes

@@ -3,46 +3,75 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#111111">
+  <meta name="theme-color" content="#0f151b">
   <title>podcatch</title>
   <!-- crossorigin: manifest requests are uncredentialed by default, so the auth
        proxy bounces them to a cross-origin login URL that sends no CORS headers. -->
   <link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎧</text></svg>">
-  <link rel="stylesheet" href="/style.css?v=0.2.14">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,500&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/style.css?v=0.3.0">
 </head>
 <body>
   <div id="app">
 
     <header>
-      <button id="btn-menu-toggle" class="icon-btn mobile-only" title="Feeds">☰</button>
-      <span class="wordmark">podcatch</span>
+      <button id="btn-menu-toggle" class="icon-btn mobile-only" title="Feeds">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <span class="wordmark"><span class="ring"></span>podcatch</span>
+      <div id="search-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input type="search" id="input-episode-search" placeholder="Search episodes…" autocomplete="off">
+      </div>
       <div class="header-actions">
-        <button id="btn-transfer" class="icon-btn" title="Transfer / Remote">⇄</button>
-        <button id="btn-refresh-all" class="icon-btn" title="Refresh all feeds">↻</button>
-        <button id="btn-settings" class="icon-btn" title="Settings">⚙</button>
-        <button id="btn-add-feed" class="icon-btn primary" title="Add feed">+</button>
+        <button id="btn-transfer" class="icon-btn" title="Transfer / Remote">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h11m0 0-3-3m3 3-3 3M17 17H6m0 0 3 3m-3-3 3-3"/></svg>
+        </button>
+        <button id="btn-refresh-all" class="icon-btn" title="Refresh all feeds">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.4-6.4L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.4 6.4L3 16m0 5v-5h5"/></svg>
+        </button>
+        <button id="btn-settings" class="icon-btn" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 0 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 0 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1Z"/></svg>
+        </button>
+        <button id="btn-add-feed" class="icon-btn primary" title="Add feed">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2.3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
       </div>
     </header>
 
     <div id="layout">
       <nav id="sidebar">
-        <div class="nav-item" data-feed-id="continue">
-          <span class="feed-icon">▶</span>
-          <span class="feed-name">Continue Listening</span>
+        <div id="sidebar-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" id="input-episode-search-mobile" placeholder="Search episodes…" autocomplete="off">
         </div>
-        <div class="nav-item" data-feed-id="all">
-          <span class="feed-icon">◉</span>
-          <span class="feed-name">All Episodes</span>
-          <span class="unread-badge" id="badge-all"></span>
+        <div class="nav-group">
+          <div class="nav-item" data-feed-id="continue">
+            <svg class="feed-icon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v18l15-9L5 3z"/></svg>
+            <span class="feed-name">Continue Listening</span>
+          </div>
+          <div class="nav-item" data-feed-id="all">
+            <span class="reel-icon" id="all-reel-icon"></span>
+            <span class="feed-name">All Episodes</span>
+            <span class="unread-badge" id="badge-all"></span>
+          </div>
         </div>
-        <div id="feed-list"></div>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-caption">Feeds</div>
+        <div class="nav-group" id="feed-list"></div>
         <div id="sidebar-version"></div>
       </nav>
+      <div id="sidebar-scrim"></div>
 
       <main id="episode-list">
         <div id="episode-list-header">
-          <input type="search" id="input-episode-search" placeholder="Search episodes…" autocomplete="off">
+          <div>
+            <div id="list-title">All Episodes</div>
+            <div id="list-sub"></div>
+          </div>
           <select id="sort-select">
             <option value="newest">Newest first</option>
             <option value="oldest">Oldest first</option>
@@ -67,22 +96,38 @@
           <div id="player-text">
             <div id="remote-indicator"></div>
             <div id="player-title"></div>
+            <div id="player-feed"></div>
           </div>
         </div>
         <div id="player-controls">
-          <button class="ctrl-btn" id="btn-seek-back10" title="−10s">−10</button>
-          <button class="ctrl-btn" id="btn-seek-back" title="−30s">−30</button>
-          <button class="ctrl-btn play-btn" id="btn-play-pause">▶</button>
-          <button class="ctrl-btn" id="btn-seek-fwd" title="+30s">+30</button>
+          <button class="ctrl-btn skip" id="btn-seek-back10" title="−10s">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><text x="13" y="13.5" text-anchor="middle" dominant-baseline="central" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">10</text></svg>
+          </button>
+          <button class="ctrl-btn skip" id="btn-seek-back" title="−30s">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><text x="13" y="13.5" text-anchor="middle" dominant-baseline="central" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">30</text></svg>
+          </button>
+          <button class="ctrl-btn play-btn" id="btn-play-pause" title="Play/Pause">
+            <svg id="icon-play-pause" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          </button>
+          <button class="ctrl-btn skip" id="btn-seek-fwd" title="+30s">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/><text x="11" y="13.5" text-anchor="middle" dominant-baseline="central" font-size="7.5" font-weight="700" fill="currentColor" stroke="none">30</text></svg>
+          </button>
+          <button class="ctrl-btn" id="btn-mark-played-mobile" title="Mark played">
+            <svg id="icon-mark-played-mobile" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8" fill="currentColor" stroke="none"/></svg>
+          </button>
           <div id="progress-wrap">
-            <span id="time-current">0:00</span>
+            <span id="time-current" class="mono">0:00</span>
             <input type="range" id="seek-bar" value="0" min="0" step="1">
-            <span id="time-total">0:00</span>
-            <button class="ctrl-btn" id="btn-end-played" title="End &amp; mark played">⏹</button>
+            <span id="time-total" class="mono">0:00</span>
           </div>
-          <button class="ctrl-btn toggle-btn" id="btn-toggle-video" title="Toggle video" style="display:none">▣</button>
+          <button class="ctrl-btn" id="btn-mark-played" title="Mark played">
+            <svg id="icon-mark-played" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button class="ctrl-btn toggle-btn" id="btn-toggle-video" title="Toggle video" style="display:none">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18"/></svg>
+          </button>
           <div id="speed-wrap">
-            <button class="ctrl-btn" id="btn-speed" title="Playback speed">1×</button>
+            <button class="ctrl-btn" id="btn-speed">1×</button>
             <div id="speed-popup" class="context-menu hidden"></div>
           </div>
         </div>
@@ -213,6 +258,6 @@
 
   <div id="toast-container"></div>
 
-  <script src="/app.js?v=0.2.14"></script>
+  <script src="/app.js?v=0.3.0"></script>
 </body>
 </html>
