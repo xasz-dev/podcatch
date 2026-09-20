@@ -66,8 +66,6 @@ header{
   content:'';position:absolute;top:5px;right:5px;width:7px;height:7px;border-radius:50%;
   background:var(--flare);border:2px solid var(--panel);
 }
-#btn-menu-toggle{display:none}
-
 /* Reserves room for the fixed player bar so scrollable content (sidebar,
    episode list, "load more") never ends up hidden behind it — --player-h is
    kept in sync with the player's real rendered height by a ResizeObserver. */

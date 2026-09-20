@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 — 2026-09-20
+
+### Bug fixes
+- Fix the mobile menu button being permanently invisible — a leftover `#btn-menu-toggle{display:none}` rule outranked the `.mobile-only` class meant to reveal it at narrow widths, since an ID selector always beats a class one regardless of the media query. With no way to open it, the sidebar (feeds, search, Continue Listening) was completely unreachable on a phone
+- Fix marking the actively-playing episode played leaving it undimmed and, on the next refresh, its progress meter blank instead of updated — `endPlaybackNow()` now clears playback state the same way the player naturally reaching the end already did, instead of leaving it half-cleaned-up
+- A read episode's progress bar is now hidden outright rather than sometimes showing a stale position
+- Fix the sidebar (and, on mobile, the taller stacked player) having no reserved space for the fixed player bar, so the last feed and the version line ended up hidden behind it — `--player-h` now tracks the player's real rendered height
+
 ## 0.3.0 — 2026-09-19
 
 ### Redesign
