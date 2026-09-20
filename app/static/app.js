@@ -520,6 +520,7 @@ async function playEpisode(ep, preferVideo, skipFetch = false) {
   // Update UI immediately — before any awaits so there's instant feedback
   $('player').classList.remove('hidden');
   setPlayerTitle(ep.title, ep.page_url);
+  $('player-feed').textContent = ep.feed_name || '';
   $('player-thumb').src = ep.thumbnail_url || '';
   $('player-thumb').style.display = ep.thumbnail_url ? '' : 'none';
   setPlayPauseIcon('loading');
@@ -1638,6 +1639,7 @@ function stopRemoteTicker() {
 function updateRemotePlayerUI(rs) {
   if (!state.remote) return;
   setPlayerTitle(rs.episode?.title || `Playing on ${state.remote.deviceName}`, rs.episode?.page_url);
+  $('player-feed').textContent = rs.episode?.feed_name || '';
   $('player-thumb').src = rs.episode?.thumbnail_url || '';
   $('player-thumb').style.display = rs.episode?.thumbnail_url ? '' : 'none';
   setPlayPauseIcon(rs.playing ? 'pause' : 'play');
@@ -1667,6 +1669,7 @@ async function enterRemoteMode(deviceId, deviceName) {
     if (rs.playing) startRemoteTicker();
   } else {
     setPlayerTitle(`Connecting to ${deviceName}…`, null);
+    $('player-feed').textContent = '';
     setPlayPauseIcon('loading');
   }
 
@@ -1684,6 +1687,7 @@ function exitRemoteMode() {
   if (state.playing) {
     $('player').classList.remove('hidden');
     setPlayerTitle(state.playing.episode.title, state.playing.episode.page_url);
+    $('player-feed').textContent = state.playing.episode.feed_name || '';
     $('player-thumb').src = state.playing.episode.thumbnail_url || '';
     $('player-thumb').style.display = state.playing.episode.thumbnail_url ? '' : 'none';
     setPlayPauseIcon(media.paused ? 'play' : 'pause');

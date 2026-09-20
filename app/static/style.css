@@ -376,11 +376,14 @@ label input:focus{border-color:var(--cyan-dim)}
   #player-thumb{width:64px;height:64px;border-radius:9px}
   #player-title{font-size:15px}
   #player-feed{font-size:12.5px;margin-top:1px}
-  #progress-wrap{order:2;flex:0 0 100%;flex-wrap:wrap;justify-content:space-between;row-gap:4px}
+  /* #progress-wrap is nested INSIDE #player-controls (not a sibling of it),
+     so it needs #player-controls itself to wrap, and an order lower than the
+     buttons' default 0 to land on its own line above them rather than after. */
+  #progress-wrap{order:-1;flex:0 0 100%;flex-wrap:wrap;justify-content:space-between;row-gap:4px}
   #seek-bar{order:1;flex:0 0 100%}
   #time-current{order:2}
   #time-total{order:3}
-  #player-controls{order:3;flex:0 0 100%;justify-content:space-between;gap:6px}
+  #player-controls{order:3;flex:0 0 100%;flex-wrap:wrap;justify-content:space-between;gap:6px;row-gap:10px}
   #speed-wrap{display:none}
   #btn-toggle-video{display:none !important}
   .ctrl-btn{width:46px;height:46px}

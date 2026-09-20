@@ -51,37 +51,9 @@ The app will be available at `http://your-nas-ip:8000`.
 
 ---
 
-## Public access with Cloudflare Tunnel (optional)
+## Public access
 
-To expose the app securely over the internet without opening firewall ports:
-
-1. Install `cloudflared` on the host and authenticate:
-   ```bash
-   cloudflared tunnel login
-   cloudflared tunnel create podcatch
-   ```
-
-2. Create `/etc/cloudflared/config.yml`:
-   ```yaml
-   tunnel: <tunnel-id>
-
-   ingress:
-     - hostname: podcatch.yourdomain.com
-       service: http://localhost:8000
-     - service: http_status:404
-   ```
-
-3. Route DNS and run as a service:
-   ```bash
-   cloudflared tunnel route dns podcatch podcatch.yourdomain.com
-   cloudflared --config /etc/cloudflared/config.yml service install
-   systemctl enable cloudflared
-   systemctl start cloudflared
-   ```
-
-4. Add passwordless auth via [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) (Zero Trust → Access → Applications). Email one-time code requires no password and works well on mobile.
-
-> After any rebuild, purge the Cloudflare cache (Dashboard → Caching → Purge Everything) to pick up updated static files.
+The app is exposed over the internet through [Pangolin](https://github.com/fosrl/pangolin), a self-hosted tunnel and auth proxy, rather than Cloudflare Tunnel — the auth gate `app.js` talks about (session-expiry detection, opaque-redirect handling) is Pangolin's.
 
 ---
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 — 2026-09-20
+
+### Bug fixes
+- Fix the mobile player's transport row (skip/play/mark-played) and progress bar being squeezed onto one line instead of stacking into their own rows — the progress bar is a child of the transport row, not a sibling of it, so it needed that row to actually wrap, and an order lower than the buttons' to land above rather than after them
+- Fix the player never showing which feed the playing episode is from — `#player-feed` existed in the markup but nothing ever set its text
+
+### Docs
+- Replace the outdated Cloudflare Tunnel section with a note that public access goes through Pangolin now
+
 ## 0.3.1 — 2026-09-20
 
 ### Bug fixes
