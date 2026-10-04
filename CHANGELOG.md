@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3 — 2026-10-03
+
+### Bug fixes
+- Fix "Log in again" on the session-expired dialog opening tabs that showed the same error instead of a login page, which made Retry fail too. Static files were served with a `Last-Modified` date but no `Cache-Control`, so the browser applied heuristic freshness and answered the new tab from its cache without ever contacting the server, meaning the auth proxy never got to redirect to its login page. Static files now send `Cache-Control: no-cache` (the ETag still gives a cheap 304), and the login button opens a URL with a unique query string so it can't be answered from cache even by an already-stale page
+
 ## 0.3.2 — 2026-09-20
 
 ### Bug fixes

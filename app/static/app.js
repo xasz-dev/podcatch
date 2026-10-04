@@ -1361,7 +1361,11 @@ $('btn-save-settings').addEventListener('click', async () => {
 const sessionExpiredDialog = $('dialog-session-expired');
 
 $('btn-session-login').addEventListener('click', () => {
-  window.open(window.location.href, '_blank');
+  // A unique query string guarantees this navigation reaches the server (and so
+  // the auth proxy) instead of being answered from the browser's cached copy.
+  const url = new URL(window.location.href);
+  url.searchParams.set('relogin', Date.now());
+  window.open(url.href, '_blank');
 });
 
 $('btn-session-retry').addEventListener('click', async () => {

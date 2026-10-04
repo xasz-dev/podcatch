@@ -21,7 +21,7 @@ from scheduler import start_scheduler
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-__version__ = '0.3.2'
+__version__ = '0.3.3'
 
 # In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
 _devices: dict[str, dict] = {}
@@ -777,4 +777,16 @@ async def prewarm(episode_ids: list[int]):
 
 # ── Static files (must be last) ────────────────────────────────────────────────
 
-app.mount('/', StaticFiles(directory='static', html=True), name='static')
+class RevalidatingStaticFiles(StaticFiles):
+    # Without a Cache-Control header the browser applies heuristic freshness off
+    # Last-Modified (~10% of the file's age), so a page that hasn't changed in a
+    # while is served straight from cache without ever reaching the auth proxy.
+    # That's what made "Log in again" open a tab that never saw a login redirect.
+    # no-cache still lets the ETag answer with a cheap 304.
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers['Cache-Control'] = 'no-cache'
+        return response
+
+
+app.mount('/', RevalidatingStaticFiles(directory='static', html=True), name='static')
