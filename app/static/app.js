@@ -831,10 +831,10 @@ $('btn-seek-fwd').addEventListener('click', () => {
   media.currentTime += 30;
 });
 // ── Mark played (player) ─────────────────────────────────────────────────────
-// A single toggle, mirrored on desktop (inline with the progress bar) and on
-// mobile (in the transport row) — clicking either marks the actively-loaded
-// episode played/unplayed via toggleRead(), which also ends playback now when
-// marking (not unmarking) the episode that's currently loaded.
+// A desktop-only toggle inline with the progress bar (on mobile that slot holds
+// the speed control) — clicking it marks the actively-loaded episode
+// played/unplayed via toggleRead(), which also ends playback now when marking
+// (not unmarking) the episode that's currently loaded.
 function endPlaybackNow() {
   // Mirrors the media 'ended' handler: marking the loaded episode played is
   // meant to behave exactly like actually reaching the end, so state.playing
@@ -855,13 +855,11 @@ function endPlaybackNow() {
 
 function updateMarkPlayedButtons() {
   const ep = state.playing?.episode;
-  for (const id of ['btn-mark-played', 'btn-mark-played-mobile']) {
-    const btn = $(id);
-    if (!ep) { btn.classList.remove('active'); continue; }
-    btn.classList.toggle('active', !ep.is_read);
-    btn.title = ep.is_read ? 'Mark unplayed' : 'Mark played';
-    btn.innerHTML = markReadIconSvg(ep.is_read);
-  }
+  const btn = $('btn-mark-played');
+  if (!ep) { btn.classList.remove('active'); return; }
+  btn.classList.toggle('active', !ep.is_read);
+  btn.title = ep.is_read ? 'Mark unplayed' : 'Mark played';
+  btn.innerHTML = markReadIconSvg(ep.is_read);
 }
 
 function markPlayedClick() {
@@ -869,7 +867,6 @@ function markPlayedClick() {
   toggleRead(state.playing.episode);
 }
 $('btn-mark-played').addEventListener('click', markPlayedClick);
-$('btn-mark-played-mobile').addEventListener('click', markPlayedClick);
 $('seek-bar').addEventListener('input', (e) => {
   if (state.remote) {
     const rs = state.remoteState[state.remote.deviceId];

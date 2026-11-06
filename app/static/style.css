@@ -212,9 +212,8 @@ header{
 .play-btn:hover{background:#57e3da}
 .play-btn svg{width:19px;height:19px}
 
-#btn-mark-played,#btn-mark-played-mobile{color:var(--dim)}
-#btn-mark-played.active,#btn-mark-played-mobile.active{color:var(--cyan)}
-#btn-mark-played-mobile{display:none}
+#btn-mark-played{color:var(--dim)}
+#btn-mark-played.active{color:var(--cyan)}
 #player.remote-mode #btn-mark-played{display:none}
 
 #progress-wrap{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
@@ -384,16 +383,16 @@ label input:focus{border-color:var(--cyan-dim)}
   #time-current{order:2}
   #time-total{order:3}
   #player-controls{order:3;flex:0 0 100%;flex-wrap:wrap;justify-content:space-between;gap:6px;row-gap:10px}
-  #speed-wrap{display:none}
   #btn-toggle-video{display:none !important}
   .ctrl-btn{width:46px;height:46px}
   .ctrl-btn svg{width:19px;height:19px}
   .ctrl-btn.skip svg{width:23px;height:23px}
   .play-btn{width:60px;height:60px}
   .play-btn svg{width:25px;height:25px}
+  /* Speed takes the transport row's last slot (mark-played stays desktop-only;
+     on mobile it's still on each episode row). */
   #btn-mark-played{display:none}
-  #btn-mark-played-mobile{display:flex}
-  #player.remote-mode #btn-mark-played-mobile{display:none}
+  #btn-speed{height:46px;min-width:46px;padding:0 10px;font-size:14px}
 
   dialog{min-width:0;width:92vw;padding:18px}
 }
