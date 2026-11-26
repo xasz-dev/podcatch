@@ -21,7 +21,7 @@ from scheduler import start_scheduler
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-__version__ = '0.3.3'
+__version__ = '0.3.4'
 
 # In-memory device registry: device_id -> {'name': str, 'queues': [asyncio.Queue, ...]}
 # A device can hold several live SSE connections at once: every tab of the same
