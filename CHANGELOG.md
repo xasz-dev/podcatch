@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Bug fixes
+- Fix the transfer button on desktop often doing nothing: a click on its icon targets the `<svg>` inside the button, and the click-outside handler compared the target to the button itself, so it closed the popup the instant it opened. Taps on the button's padding worked, which is why it felt random
+- Fix a device vanishing from the device list while it was still open: every tab of a browser shares one device id, and the server kept only one connection per id, so closing one tab removed the device even though another tab was still connected (and that tab silently stopped receiving handoffs). The server now tracks every connection per device, sends events to the newest one, and only drops the device when its last connection closes. A tab reconnects when it comes to the front so it becomes the one that receives handoffs
+- Fix "No other devices online" showing when another device was online: the list only updated on presence events, which a tab missed if its event stream had silently died (sleep/wake, a network change, a proxy dropping an idle connection). The keepalive is now a data event the client can see, a stream that goes quiet for 70 s is reopened, and the transfer button fetches the live device list each time it opens
+- Sending playback to another device now confirms with a toast, or says so when it fails, instead of failing silently
+
 ## 0.3.3 — 2026-10-03
 
 ### Bug fixes

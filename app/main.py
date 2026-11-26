@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 
 __version__ = '0.3.3'
 
-# In-memory device registry: device_id -> {'name': str, 'queue': asyncio.Queue}
+# In-memory device registry: device_id -> {'name': str, 'queues': [asyncio.Queue, ...]}
+# A device can hold several live SSE connections at once: every tab of the same
+# browser profile shares one device id (it lives in localStorage), and a tab that
+# reconnects can briefly overlap its old connection. Events go to the newest
+# connection only, and the device stays listed until its last connection closes.
 _devices: dict[str, dict] = {}
 
 # Stream URL cache: (youtube_id, prefer_video) -> (url, content_type, expires_at)
@@ -205,8 +209,9 @@ def _set_cached_stream(youtube_id: str, prefer_video: bool, url: str, content_ty
 
 
 async def _push(device_id: str, event: dict):
-    if device_id in _devices:
-        await _devices[device_id]['queue'].put(event)
+    dev = _devices.get(device_id)
+    if dev and dev['queues']:
+        await dev['queues'][-1].put(event)
 
 
 async def _broadcast(event: dict, exclude: str | None = None):
@@ -457,7 +462,9 @@ async def update_episode(episode_id: int, req: UpdateEpisodeRequest):
 @app.get('/api/events')
 async def sse_stream(device_id: str, name: str):
     queue: asyncio.Queue = asyncio.Queue()
-    _devices[device_id] = {'name': name, 'queue': queue}
+    dev = _devices.setdefault(device_id, {'name': name, 'queues': []})
+    dev['name'] = name
+    dev['queues'].append(queue)
 
     async def generate():
         try:
@@ -468,11 +475,16 @@ async def sse_stream(device_id: str, name: str):
                     event = await asyncio.wait_for(queue.get(), timeout=25)
                     yield f"data: {json.dumps(event)}\n\n"
                 except asyncio.TimeoutError:
-                    yield ': keepalive\n\n'
+                    # A data event rather than an SSE comment, so the client sees
+                    # it and can tell a live stream from one that silently died.
+                    yield f"data: {json.dumps({'type': 'ping'})}\n\n"
         finally:
-            if _devices.get(device_id, {}).get('queue') is queue:
-                _devices.pop(device_id, None)
-                await _broadcast({'type': 'devices_changed'}, exclude=device_id)
+            cur = _devices.get(device_id)
+            if cur and queue in cur['queues']:
+                cur['queues'].remove(queue)
+                if not cur['queues']:
+                    _devices.pop(device_id, None)
+                    await _broadcast({'type': 'devices_changed'}, exclude=device_id)
 
     return StreamingResponse(
         generate(),
