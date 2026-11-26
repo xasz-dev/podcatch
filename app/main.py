@@ -468,7 +468,10 @@ async def sse_stream(device_id: str, name: str):
                     event = await asyncio.wait_for(queue.get(), timeout=25)
                     yield f"data: {json.dumps(event)}\n\n"
                 except asyncio.TimeoutError:
-                    yield ': keepalive\n\n'
+                    # A data event rather than an SSE comment, so the client can
+                    # see it and detect a connection that's silently gone dead
+                    # (common after Android freezes a backgrounded PWA).
+                    yield f"data: {json.dumps({'type': 'ping'})}\n\n"
         finally:
             if _devices.get(device_id, {}).get('queue') is queue:
                 _devices.pop(device_id, None)

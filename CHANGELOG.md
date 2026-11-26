@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug fixes
+- Fix the episode list and progress going stale on the phone (installed PWA) until the app was closed and reopened. The list only ever updates in response to SSE events, and anything broadcast while the device wasn't listening was lost: Android freezes a backgrounded PWA and either drops its SSE connection (the reconnect started from "now" with no catch-up) or leaves it half-open, still reporting `OPEN` while nothing arrives, so the "reconnect only if closed" check on resume never fired. Now the server sends a visible `ping` event every 25s and the client replaces any connection that's been silent for 60s; returning to the foreground after more than 5s always opens a fresh connection; and every reconnect or resume re-fetches feeds and the visible episodes (new episodes, read state and progress)
+- Episode progress meters now advance live while another device is playing that episode, using the player-state broadcasts that were already being sent
+
 ## 0.3.3 — 2026-10-03
 
 ### Bug fixes
