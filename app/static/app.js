@@ -1420,21 +1420,7 @@ function connectSSE(failCount = 0) {
     }
 
     if (event.type === 'connected' || event.type === 'devices_changed') {
-      const devices = await api('GET', '/api/devices');
-      state.otherDevices = devices.filter(d => d.id !== DEVICE_ID);
-      // Drop remoteState for devices that are no longer connected, so a stale
-      // "playing" doesn't linger in the ambient indicator after they vanish.
-      const onlineIds = new Set(state.otherDevices.map(d => d.id));
-      for (const did of Object.keys(state.remoteState)) {
-        if (!onlineIds.has(did)) delete state.remoteState[did];
-      }
-      // If the device we're controlling just disconnected, exit remote mode
-      if (state.remote && !state.otherDevices.find(d => d.id === state.remote.deviceId)) {
-        const remoteName = state.remote.deviceName;
-        exitRemoteMode();
-        showToast(`${remoteName} disconnected`, 'info');
-      }
-      updateTransferButton();
+      await refreshOtherDevices().catch(() => {});
     }
 
     if (event.type === 'feeds_changed') {
@@ -1609,6 +1595,24 @@ setInterval(() => {
   }
 }, 15000);
 
+async function refreshOtherDevices() {
+  const devices = await api('GET', '/api/devices');
+  state.otherDevices = devices.filter(d => d.id !== DEVICE_ID);
+  // Drop remoteState for devices that are no longer connected, so a stale
+  // "playing" doesn't linger in the ambient indicator after they vanish.
+  const onlineIds = new Set(state.otherDevices.map(d => d.id));
+  for (const did of Object.keys(state.remoteState)) {
+    if (!onlineIds.has(did)) delete state.remoteState[did];
+  }
+  // If the device we're controlling just disconnected, exit remote mode
+  if (state.remote && !state.otherDevices.find(d => d.id === state.remote.deviceId)) {
+    const remoteName = state.remote.deviceName;
+    exitRemoteMode();
+    showToast(`${remoteName} disconnected`, 'info');
+  }
+  updateTransferButton();
+}
+
 function updateTransferButton() {
   const anyoneElsePlaying = Object.values(state.remoteState).some(rs => rs.playing);
   $('btn-transfer').classList.toggle('has-active-playback', anyoneElsePlaying);
@@ -1616,7 +1620,17 @@ function updateTransferButton() {
 
 const devicePopup = $('device-popup');
 
-$('btn-transfer').addEventListener('click', () => {
+$('btn-transfer').addEventListener('click', async () => {
+  // Clicking the button while its popup is open closes it.
+  if (!devicePopup.classList.contains('hidden')) {
+    devicePopup.classList.add('hidden');
+    return;
+  }
+  // The cached list only changes on presence events, which this tab misses if
+  // its event stream quietly died. Ask the server for the live list instead,
+  // and revive the stream if it looks dead.
+  if (sseLooksDead()) connectSSE();
+  try { await refreshOtherDevices(); } catch (_) {}
   devicePopup.innerHTML = '';
 
   if (state.remote) {
@@ -1651,7 +1665,7 @@ $('btn-transfer').addEventListener('click', () => {
     }
   }
 
-  devicePopup.classList.toggle('hidden');
+  devicePopup.classList.remove('hidden');
   // Position below the header button
   requestAnimationFrame(() => {
     const rect = $('btn-transfer').getBoundingClientRect();
@@ -1664,7 +1678,9 @@ $('btn-transfer').addEventListener('click', () => {
 });
 
 document.addEventListener('click', (e) => {
-  if (!devicePopup.contains(e.target) && e.target !== $('btn-transfer')) {
+  // contains(), not ===: a click on the button's icon targets the <svg>/<path>
+  // inside it, which used to close the popup the instant it opened.
+  if (!devicePopup.contains(e.target) && !$('btn-transfer').contains(e.target)) {
     devicePopup.classList.add('hidden');
   }
 });
@@ -1673,19 +1689,28 @@ async function transferTo(targetDeviceId) {
   devicePopup.classList.add('hidden');
   if (!state.playing) return;
 
+  const target = state.otherDevices.find(d => d.id === targetDeviceId);
+  const targetName = target?.name || 'the other device';
+
   // Save current position before handing off
   const pos = Math.floor(media.currentTime);
-  await API.episodes.update(state.playing.episode.id, { playback_position: pos });
-
-  await api('POST', '/api/handoff', {
-    to_device_id: targetDeviceId,
-    episode_id: state.playing.episode.id,
-    position: pos,
-    prefer_video: state.playing.preferVideo,
-  });
+  try {
+    await API.episodes.update(state.playing.episode.id, { playback_position: pos });
+    await api('POST', '/api/handoff', {
+      to_device_id: targetDeviceId,
+      episode_id: state.playing.episode.id,
+      position: pos,
+      prefer_video: state.playing.preferVideo,
+    });
+  } catch (_) {
+    showToast(`Couldn't send to ${targetName}. It may have gone offline.`, 'error');
+    refreshOtherDevices().catch(() => {});
+    return;
+  }
 
   // Pause locally
   media.pause();
+  showToast(`Sent to ${targetName}`, 'info');
 }
 
 // ── Remote control ─────────────────────────────────────────────────────────────

@@ -5,6 +5,10 @@
 ### Bug fixes
 - Fix the episode list and progress going stale on the phone (installed PWA) until the app was closed and reopened. The list only ever updates in response to SSE events, and anything broadcast while the device wasn't listening was lost: Android freezes a backgrounded PWA and either drops its SSE connection (the reconnect started from "now" with no catch-up) or leaves it half-open, still reporting `OPEN` while nothing arrives, so the "reconnect only if closed" check on resume never fired. Now the server sends a visible `ping` event every 25s and the client replaces any connection that's been silent for 60s; returning to the foreground after more than 5s always opens a fresh connection; and every reconnect or resume re-fetches feeds and the visible episodes (new episodes, read state and progress)
 - Episode progress meters now advance live while another device is playing that episode, using the player-state broadcasts that were already being sent
+- Fix the transfer button on desktop often doing nothing: a click on its icon targets the `<svg>` inside the button, and the click-outside handler compared the target to the button itself, so it closed the popup the instant it opened. Clicks on the button's padding worked, which is why it felt random
+- Fix a device vanishing from the device list while it was still open: every tab of a browser shares one device id, and the server kept only one connection per id, so closing one tab removed the device even though another tab was still connected (and that tab had silently stopped receiving handoffs). The server now tracks every connection per device, sends events to the newest one, and only drops the device when its last connection closes
+- Fix "No other devices online" showing when another device was online: the transfer button now fetches the live device list each time it opens, and reopens this tab's event stream if it looks dead, instead of trusting a list that only updated on presence events
+- Sending playback to another device now confirms with a toast, or says so when it fails, instead of failing silently
 
 ## 0.3.3 — 2026-10-03
 
