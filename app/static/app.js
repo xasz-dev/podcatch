@@ -1402,12 +1402,22 @@ function connectSSE(failCount = 0) {
   const url = `/api/events?device_id=${encodeURIComponent(DEVICE_ID)}&name=${encodeURIComponent(DEVICE_NAME)}`;
   const es = new EventSource(url);
   _sseSource = es;
+  _sseLastEventAt = Date.now();
 
   es.onmessage = async (e) => {
     if (gen !== _sseGen) return;
     failCount = 0;
+    _sseLastEventAt = Date.now();
     let event;
     try { event = JSON.parse(e.data); } catch (_) { return; }
+    if (event.type === 'ping') return;
+
+    if (event.type === 'connected') {
+      // Any connection after the first means we were deaf for a while; pull
+      // whatever changed in the meantime instead of waiting for the next event.
+      if (_sseHasConnected) resyncAfterGap();
+      _sseHasConnected = true;
+    }
 
     if (event.type === 'connected' || event.type === 'devices_changed') {
       const devices = await api('GET', '/api/devices');
@@ -1485,6 +1495,16 @@ function connectSSE(failCount = 0) {
         episode: episodeChanged ? null : existing.episode,
       };
       updateTransferButton();
+      // Advance this episode's progress meter live while another device plays
+      // it — position saves don't broadcast, so the row would otherwise only
+      // catch up on the next reload.
+      if (event.episode_id && event.duration > 0) {
+        const row = state.episodes.find(ep => ep.id === event.episode_id);
+        if (row && !row.is_read) {
+          row.playback_position = Math.floor(event.position || 0);
+          updateRowProgress(row.id, Math.min(100, (row.playback_position / event.duration) * 100));
+        }
+      }
       if (episodeChanged && event.episode_id) {
         API.episodes.get(event.episode_id).then(ep => {
           if (state.remoteState[event.device_id]) {
@@ -1514,12 +1534,80 @@ function connectSSE(failCount = 0) {
   };
 }
 
+// ── Resume / reconnect catch-up ─────────────────────────────────────────────────
+// The feed and progress only ever update in response to SSE events, so anything
+// broadcast while this device wasn't listening is simply lost. On a phone that's
+// the normal case: Android freezes a backgrounded PWA, and its SSE connection is
+// either dropped (the reconnect then starts from "now" with no replay) or, worse,
+// left half-open: readyState still says OPEN but nothing ever arrives again, so
+// the old "reconnect only if CLOSED" check never fired. Either way the list sat
+// stale until the app was closed and reopened.
+//
+// Fixes: (1) the server sends a data-carrying ping every 25s and a watchdog
+// replaces any connection that's gone quiet; (2) coming back to the foreground
+// after more than a few seconds always opens a fresh connection; (3) every
+// reconnect — and every resume — re-fetches feeds and the visible episodes.
+const SSE_STALE_MS = 60000;       // > 2 missed pings means the connection is dead
+const RESUME_RECONNECT_MS = 5000; // hidden longer than this → don't trust the old connection
+let _sseLastEventAt = Date.now();
+let _sseHasConnected = false;
+let _hiddenAt = null;
+let _resyncInFlight = null;
+
+async function resyncAfterGap() {
+  // Coalesce: a resume usually triggers both the visibility handler and the
+  // reconnect's 'connected' event within the same second.
+  if (_resyncInFlight) return _resyncInFlight;
+  _resyncInFlight = (async () => {
+    try {
+      await loadFeeds();
+      if (state.currentFeedId === 'continue') {
+        // In-progress items may have appeared or dropped off entirely, which a
+        // patch of the loaded rows can't express.
+        await loadEpisodes(true);
+      } else {
+        await refreshEpisodeReadStates();
+        // prependNewEpisodes ignores the search box, so skip it mid-search
+        // rather than slipping non-matching episodes into the results.
+        if (!state.episodeQuery) await prependNewEpisodes();
+      }
+    } catch (_) {
+      // Network still waking up — the next reconnect or resume will try again.
+    } finally {
+      _resyncInFlight = null;
+    }
+  })();
+  return _resyncInFlight;
+}
+
+function sseLooksDead() {
+  return !_sseSource
+    || _sseSource.readyState === EventSource.CLOSED
+    || Date.now() - _sseLastEventAt > SSE_STALE_MS;
+}
+
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && (!_sseSource || _sseSource.readyState === EventSource.CLOSED)) {
-    connectSSE();
+  if (document.hidden) {
+    _hiddenAt = Date.now();
+    return;
+  }
+  const hiddenFor = _hiddenAt ? Date.now() - _hiddenAt : 0;
+  _hiddenAt = null;
+  if (hiddenFor > RESUME_RECONNECT_MS || sseLooksDead()) {
+    connectSSE(); // its 'connected' event runs the catch-up
+  } else if (hiddenFor > 0) {
+    resyncAfterGap();
   }
 });
+// bfcache restore: the page comes back with a dead connection and old data.
+window.addEventListener('pageshow', (e) => { if (e.persisted) connectSSE(); });
 window.addEventListener('online', () => connectSSE());
+setInterval(() => {
+  if (!document.hidden && _sseSource && _sseSource.readyState === EventSource.OPEN
+      && Date.now() - _sseLastEventAt > SSE_STALE_MS) {
+    connectSSE();
+  }
+}, 15000);
 
 function updateTransferButton() {
   const anyoneElsePlaying = Object.values(state.remoteState).some(rs => rs.playing);
